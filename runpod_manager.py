@@ -65,6 +65,7 @@ PRESET = {
     "global_network": False,
 }
 PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
+DEFAULT_PROJECT_QUOTA = 4
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
@@ -76,6 +77,7 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 SETTINGS_FILE = DATA_DIR / "admin_settings.json"
 DB_PATH = DATA_DIR / "runpod_manager.db"
 DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
+    "project_quotas":{p: DEFAULT_PROJECT_QUOTA for p in PROJECTS},
     "auto_delete_enabled":False,"auto_delete_time":"21:00",
     "auto_delete_last_run":"","auto_delete_last_log":"",
     "idle_timeout_enabled":True,"idle_timeout_minutes":120,
@@ -1439,13 +1441,32 @@ def api_admin_check(): return jsonify({"ok":True,"admin":is_admin()})
 @require_admin
 def api_admin_settings_get():
     s=get_settings()
-    return jsonify({"ok":True,"settings":{k:s.get(k) for k in ["max_pods","auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until"]}})
+    # Ensure project_quotas has entries for every current PROJECT (handles
+    # post-migration sessions where a new project was added in code)
+    quotas = dict(s.get("project_quotas") or {})
+    for p in PROJECTS:
+        if p not in quotas:
+            quotas[p] = DEFAULT_PROJECT_QUOTA
+    return jsonify({"ok":True,"settings":{
+        "project_quotas": quotas,
+        **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until"]}
+    }})
 
 @app.route("/api/admin/settings", methods=["POST"])
 @require_admin
 def api_admin_settings_post():
     data=request.get_json() or {}; s=get_settings()
-    if "max_pods" in data: s["max_pods"]=max(1,min(50,int(data["max_pods"])))
+    # Per-project quotas. Each value 0-50. Unknown project keys ignored.
+    if isinstance(data.get("project_quotas"), dict):
+        quotas = dict(s.get("project_quotas") or {})
+        for proj, val in data["project_quotas"].items():
+            if proj not in PROJECTS:
+                continue
+            try:
+                quotas[proj] = max(0, min(50, int(val)))
+            except (TypeError, ValueError):
+                pass
+        s["project_quotas"] = quotas
     if "new_password" in data and data["new_password"].strip(): s["admin_password"]=data["new_password"].strip()
     if "auto_delete_enabled" in data: s["auto_delete_enabled"]=bool(data["auto_delete_enabled"])
     if "auto_delete_time" in data:
