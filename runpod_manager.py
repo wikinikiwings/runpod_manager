@@ -453,71 +453,103 @@ def timer_get_all(pod_ids):
         log.error(f"timer_get_all: {e}")
         return {}
 
-# ----- Hidden pods (admin-only visibility control) -----
+# ----- Pod assignment (project ownership + admin-only visibility) -----
 #
-# A pod marked as 'hidden' is invisible to regular users in the UI — they don't
-# see it in /api/pods, it doesn't count toward their pod limit, and they cannot
-# delete or start it (blocked by api_del/api_start with 403). It remains fully
-# visible to admins, who see it marked with an eye icon and a yellow border.
-#
-# Hidden pods are STILL affected by all system-wide maintenance: idle timeout,
-# daily auto-delete scheduler, and 'Delete all now' admin button. Hiding is
-# purely about visibility/ownership — NOT about opting out of cleanup. This
-# protects the billing budget: a forgotten hidden pod still gets cleaned up.
+# Each pod gets a row in pod_assignment mapping it to a project (or NULL =
+# admin-only). The row also carries counts_toward_quota (admin-created pods
+# may be exempt) and creation_source (user/admin/external — drives UI badges).
+# Regular users only see pods whose assigned_project == their session project.
+# Admin sees all, including pods without any assignment (e.g. created in
+# RunPod's web UI — labeled 'external' when admin first assigns them).
 
-def hide_pod_id(pid, by_nick):
-    """Mark a pod as hidden. Idempotent — calling on already-hidden pod is a no-op
-    (keeps the original hidden_at/hidden_by). Returns True if a new row was inserted,
-    False if the pod was already hidden."""
+def upsert_pod_assignment(pid, assigned_project, counts_toward_quota,
+                          creation_source, assigned_by):
+    """INSERT-or-UPDATE pod_assignment. creation_source is preserved from
+    an existing row if present (source is immutable after first write).
+    Caller is responsible for computing source correctly on FIRST write."""
     try:
         db = sqlite3.connect(str(DB_PATH))
-        cur = db.execute("SELECT 1 FROM pod_hidden WHERE pod_id=?", (pid,))
-        if cur.fetchone() is not None:
-            db.close()
-            return False
-        db.execute("INSERT INTO pod_hidden(pod_id, hidden_at, hidden_by) VALUES(?,?,?)",
-                   (pid, now_iso(), by_nick))
+        existing = db.execute("SELECT creation_source FROM pod_assignment WHERE pod_id=?",
+                              (pid,)).fetchone()
+        if existing:
+            # Update the mutable fields, keep original creation_source
+            db.execute("""UPDATE pod_assignment
+                SET assigned_project=?, counts_toward_quota=?, assigned_at=?, assigned_by=?
+                WHERE pod_id=?""",
+                (assigned_project, 1 if counts_toward_quota else 0,
+                 now_iso(), assigned_by, pid))
+        else:
+            db.execute("""INSERT INTO pod_assignment
+                (pod_id, assigned_project, counts_toward_quota, creation_source,
+                 assigned_at, assigned_by)
+                VALUES (?, ?, ?, ?, ?, ?)""",
+                (pid, assigned_project, 1 if counts_toward_quota else 0,
+                 creation_source, now_iso(), assigned_by))
         db.commit(); db.close()
-        return True
-    except Exception as e:
-        log.error(f"hide_pod_id: {e}")
-        return False
+    except Exception as e: log.error(f"upsert_pod_assignment: {e}")
 
-def unhide_pod_id(pid):
-    """Remove the hidden mark from a pod. Idempotent — silently succeeds if the
-    pod wasn't hidden. Also called from delete_pod() to clean up stale rows."""
+def get_pod_assignment(pid):
+    """Returns dict or None. Keys: assigned_project (may be None),
+    counts_toward_quota (bool), creation_source (str)."""
     try:
         db = sqlite3.connect(str(DB_PATH))
-        db.execute("DELETE FROM pod_hidden WHERE pod_id=?", (pid,))
+        db.row_factory = sqlite3.Row
+        row = db.execute("""SELECT assigned_project, counts_toward_quota, creation_source
+                            FROM pod_assignment WHERE pod_id=?""", (pid,)).fetchone()
+        db.close()
+        if row is None:
+            return None
+        return {
+            "assigned_project": row["assigned_project"],
+            "counts_toward_quota": bool(row["counts_toward_quota"]),
+            "creation_source": row["creation_source"],
+        }
+    except Exception as e:
+        log.error(f"get_pod_assignment: {e}")
+        return None
+
+def get_assignments_batch(pod_ids):
+    """Returns {pod_id: {assigned_project, counts_toward_quota, creation_source}}
+    for the listed pod_ids (missing rows are simply absent from the dict)."""
+    if not pod_ids: return {}
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        placeholders = ",".join("?" * len(pod_ids))
+        rows = db.execute(f"""SELECT pod_id, assigned_project, counts_toward_quota, creation_source
+            FROM pod_assignment WHERE pod_id IN ({placeholders})""", pod_ids).fetchall()
+        db.close()
+        return {r["pod_id"]: {
+            "assigned_project": r["assigned_project"],
+            "counts_toward_quota": bool(r["counts_toward_quota"]),
+            "creation_source": r["creation_source"],
+        } for r in rows}
+    except Exception as e:
+        log.error(f"get_assignments_batch: {e}")
+        return {}
+
+def delete_pod_assignment(pid):
+    """Remove the assignment row on pod deletion. Idempotent."""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.execute("DELETE FROM pod_assignment WHERE pod_id=?", (pid,))
         db.commit(); db.close()
     except Exception as e:
-        log.error(f"unhide_pod_id: {e}")
+        log.error(f"delete_pod_assignment: {e}")
 
-def get_hidden_ids():
-    """Returns a set of all currently-hidden pod ids. Used by list_pods() to
-    annotate each pod with its hidden status, and by api_pods_get to filter
-    for non-admin viewers."""
+def determine_creation_source_for_unknown(pid):
+    """For the first /assign on a pod that has no pod_assignment yet:
+    return 'external' if there is no pod_actions.create for it,
+    else 'user' (legacy pods from before this feature shipped)."""
     try:
         db = sqlite3.connect(str(DB_PATH))
-        rows = db.execute("SELECT pod_id FROM pod_hidden").fetchall()
+        has = db.execute("SELECT 1 FROM pod_actions WHERE pod_id=? AND action='create' LIMIT 1",
+                         (pid,)).fetchone()
         db.close()
-        return {r[0] for r in rows}
+        return 'user' if has else 'external'
     except Exception as e:
-        log.error(f"get_hidden_ids: {e}")
-        return set()
-
-def is_pod_hidden(pid):
-    """Quick check for api_del/api_start to decide whether to block a non-admin
-    action on a specific pod. Separate from get_hidden_ids() for clarity of intent."""
-    try:
-        db = sqlite3.connect(str(DB_PATH))
-        cur = db.execute("SELECT 1 FROM pod_hidden WHERE pod_id=?", (pid,))
-        result = cur.fetchone() is not None
-        db.close()
-        return result
-    except Exception as e:
-        log.error(f"is_pod_hidden: {e}")
-        return False
+        log.error(f"determine_creation_source_for_unknown: {e}")
+        return 'external'  # safer fallback
 
 # ============================================================
 # Settings
@@ -1207,10 +1239,10 @@ def delete_pod(pid):
     with _runtime_cache_lock:
         _runtime_cache.pop(pid, None)
     timer_delete(pid)
-    # Also clean up hidden-state, otherwise a freshly-created pod could inherit
-    # the hidden flag from a deleted one if pod IDs were ever recycled. Cheap
-    # insurance — unhide_pod_id is a no-op if the row doesn't exist.
-    unhide_pod_id(pid)
+    # Also clean up pod_assignment, otherwise a freshly-created pod could inherit
+    # the assignment from a deleted one if pod IDs were ever recycled. Cheap
+    # insurance — delete_pod_assignment is a no-op if the row doesn't exist.
+    delete_pod_assignment(pid)
 def start_pod(pid):
     r=run_cmd([_cli_path,"pod","start",pid] if _cli_is_new else [_cli_path,"start","pod",pid])
     if not r["ok"]: raise RuntimeError(r["error"])
