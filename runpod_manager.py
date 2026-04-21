@@ -2694,7 +2694,8 @@ if __name__=="__main__":
     init_db()
     s=load_settings()
     print(f"  ⚙  Admin: {'[default: admin]' if s['admin_password']=='admin' else '[custom]'}")
-    print(f"  ⚙  Max pods: {s['max_pods']}")
+    quotas = s.get('project_quotas') or {}
+    print(f"  ⚙  Per-project quotas: " + ", ".join(f"{k}={v}" for k,v in quotas.items()))
     if s.get("auto_delete_enabled"): print(f"  ⏰  Daily auto-delete: {s['auto_delete_time']}")
     else: print("  ⏰  Daily auto-delete: off")
     if s.get("idle_timeout_enabled"): print(f"  ⏱  Idle timeout: {s['idle_timeout_minutes']} min")
