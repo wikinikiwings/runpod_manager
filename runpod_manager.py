@@ -932,10 +932,11 @@ def list_pods():
     creators = get_pod_creators(all_ids)
     # Get timer data
     timers = timer_get_all(all_ids)
-    # Get the set of currently-hidden pod ids. Every pod gets an explicit
-    # hidden=True/False field — admins see the value (to render UI differently),
-    # regular users get filtered before the response leaves api_pods_get.
-    hidden_ids = get_hidden_ids()
+    # Batch-fetch per-pod assignments (pod_id -> {assigned_project,
+    # counts_toward_quota, creation_source}). Pods without a row in
+    # pod_assignment have no assignment — surfaced to the caller as nulls,
+    # equivalent to 'unassigned' / admin-only visibility.
+    assignments = get_assignments_batch(all_ids)
     s = get_settings()
     idle_timeout_min = s.get("idle_timeout_minutes", 120)
     for p in pods:
@@ -989,10 +990,19 @@ def list_pods():
             p["createdProject"] = ""
             p["createdAt"] = ""
 
-        # Annotate hidden status so the frontend can render the eye icon and
-        # yellow border for admins. Regular users get this field filtered out
-        # (together with the whole pod) in api_pods_get.
-        p["hidden"] = pid in hidden_ids
+        # ===== Assignment annotation =====
+        # Expose the assignment fields to the frontend. Unassigned (no row or
+        # assigned_project=NULL) means admin-only — the user-facing filter in
+        # api_pods_get drops these for non-admins.
+        a = assignments.get(pid)
+        if a:
+            p["assignedProject"] = a["assigned_project"]
+            p["countsTowardQuota"] = a["counts_toward_quota"]
+            p["creationSource"] = a["creation_source"]
+        else:
+            p["assignedProject"] = None
+            p["countsTowardQuota"] = False
+            p["creationSource"] = "external"
 
         # ===== TIMER LOGIC =====
         # Timer ONLY exists/runs if ComfyUI has become ready at least once.
@@ -1367,38 +1377,50 @@ def api_pods_get():
     try:
         all_pods = list_pods()
         s = get_settings()
-        raw_max = s.get("max_pods", 99)
         viewer_is_admin = is_admin()
+        nick, viewer_project = g.current_user
         if viewer_is_admin:
-            # Admin sees all pods including hidden ones — the yellow border and
-            # eye icon in the UI will distinguish them.
+            # Admin sees everything, including unassigned pods and pods from
+            # every project. The frontend renders assignedProject / creationSource
+            # badges so the admin can tell them apart.
             pods = all_pods
         else:
-            # Regular users never see hidden pods at all — completely filtered.
-            pods = [p for p in all_pods if not p.get("hidden")]
-        # runningCount = running pods in the returned list (viewer-filtered).
-        # For non-admin this excludes hidden pods. This is the number used for
-        # the 'N pods · M running' display and also the basis for quota/over.
-        run = sum(1 for p in pods if p.get("desiredStatus") == "RUNNING")
-        # Quota = min(run, max_pods). Capped display: shows '4/4' when at or
-        # over the cap, never '5/4'. Anything above the cap spills into overQuota.
-        # This matches the intuitive 'slots available' model: you have max_pods
-        # slots, and they're filled by whatever running pods you can see.
-        quota_used = min(run, raw_max)
-        # overQuota = running pods in excess of max_pods, from this viewer's
-        # perspective. For non-admin this happens when admin snuck in external
-        # pods (hidden ones are already filtered out so they don't contribute).
-        # For admin this includes BOTH external pods AND hidden pods that push
-        # the total over the cap — admin sees the full picture.
-        over_quota = max(0, run - raw_max)
+            # Regular users only see pods assigned to their own project.
+            pods = [p for p in all_pods if p.get("assignedProject") == viewer_project]
+
+        # Per-project quota. Regular users see only their project's slot count.
+        # Admin sees their own project's count too (same session.user_project)
+        # — admin-specific bypass logic is inside create_pod, not here.
+        quotas = s.get("project_quotas") or {}
+        project_quota = quotas.get(viewer_project, DEFAULT_PROJECT_QUOTA)
+        # Count running pods IN THIS PROJECT with counts_toward_quota=True.
+        project_running = sum(1 for p in all_pods
+                              if p.get("desiredStatus") == "RUNNING"
+                              and p.get("assignedProject") == viewer_project
+                              and p.get("countsTowardQuota"))
+        quota_used = min(project_running, project_quota)
+        over_quota = max(0, project_running - project_quota)
+
+        # For admin convenience, also return full project_quotas dict + each
+        # project's running count so the admin UI can show a per-project matrix.
+        project_counts = {}
+        for proj in PROJECTS:
+            project_counts[proj] = sum(1 for p in all_pods
+                                        if p.get("desiredStatus") == "RUNNING"
+                                        and p.get("assignedProject") == proj
+                                        and p.get("countsTowardQuota"))
+
         sched = {"time": s["auto_delete_time"],
                  "lastLog": s.get("auto_delete_last_log", "")} if s.get("auto_delete_enabled") else None
         window = check_pod_window()
         return jsonify({"ok": True, "pods": pods,
-                        "maxPods": raw_max,
-                        "runningCount": run,
+                        "viewerProject": viewer_project,
+                        "projectQuota": project_quota,
+                        "projectRunning": project_running,
                         "quotaUsed": quota_used,
                         "overQuota": over_quota,
+                        "projectQuotas": quotas,
+                        "projectCounts": project_counts,
                         "schedule": sched,
                         "idleTimeoutEnabled": s.get("idle_timeout_enabled", True),
                         "idleTimeoutMinutes": s.get("idle_timeout_minutes", 120),
