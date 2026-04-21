@@ -159,8 +159,38 @@ ComfyUI которое мы не чиним, только отлавливаем
 
 ## Журнал предыдущих TODO/решений
 
+### ✅ DONE: Per-project quotas (2026-04-21)
+Заменили глобальный `max_pods` на квоту на каждый проект (дефолт 4). Юзер видит
+только поды своего проекта; админ видит всё и может назначать/переназначать любой
+под (включая созданные вне менеджера в RunPod UI). Подробности — в
+`docs/superpowers/specs/2026-04-21-per-project-quotas-design.md` (spec) и
+`docs/superpowers/plans/2026-04-21-per-project-quotas.md` (13-задачный план).
+
+Ключевые изменения:
+- Новая таблица `pod_assignment(pod_id, assigned_project, counts_toward_quota,
+  creation_source, assigned_at, assigned_by)` заменила `pod_hidden`. Миграция
+  one-shot внутри `init_db()`, идемпотентна, покрыта `tests/test_migration.py`
+  (stdlib unittest, 3/3 pass).
+- Настройка `project_quotas` dict в `admin_settings.json`. `max_pods` оставлен
+  в `DEFAULT_SETTINGS` для обратной совместимости, но нигде не читается.
+- Endpoint `POST /api/admin/pods/<pid>/assign` заменил `/hide` и `/unhide`.
+  Принимает `{project, counts_toward_quota}`. Работает с any pid, в т.ч. с
+  external-подами (creation_source='external' вычисляется при первом assign).
+- Frontend: per-project grid в admin settings, dropdown+checkbox у админа при
+  создании, бейджи на карточках (CV/DV/..., 🛡 admin created, 🌐 external,
+  👁 unassigned для админа, ∞ not-counting для админа), модалка «Назначить».
+- Activity log: формат даты `DD.MM.YYYY HH:MM` (локальная TZ), сортировка
+  DESC сохранена на стороне SQL.
+
+Каждая из 13 задач прошла spec-review + code-quality-review через
+subagent-driven-development. Всего 16 feature-коммитов от `85ce4b2` до
+`4317078`. Знай, что мелкие доработки возможны — фича в проде тестируется.
+
 ### ✅ DONE: Hidden pods feature (v6.4)
 Реализовано полностью с over-quota бейджем и тестами. См. саммари сессии.
+**Заменено в 2026-04-21** на per-project quotas (см. выше) — `pod_hidden`
+таблица дропнута миграцией, функциональность теперь в `pod_assignment` с
+`assigned_project IS NULL` как эквивалент «hidden».
 
 ### ✅ DONE: Сценарий B (admin bypass лимита)
 Админ полностью обходит max_pods и pod_window restrictions.
