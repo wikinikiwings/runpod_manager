@@ -1804,6 +1804,13 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
     <span class="user-tag" id="userTag" onclick="changeUser()" title="Click to change"></span>
     <button class="btn" onclick="refreshPods()" id="rb">↻ Refresh</button>
     <button class="btn bp" onclick="createPod()" id="cb">+ New Pod</button>
+    <span id="adminCreateControls" style="display:none;align-items:center;gap:6px">
+      <select id="adminAssignProject" style="margin-left:8px;font-size:12px;padding:2px 4px">
+        <option value="">Мой проект (ADMIN)</option>
+        <option value="__null__">Не назначать</option>
+      </select>
+      <label style="margin-left:4px;font-size:12px;white-space:nowrap"><input type="checkbox" id="adminCountsFlag"> считать в квоту</label>
+    </span>
   </div>
 </header>
 <div style="display:flex;justify-content:space-between;margin-bottom:16px;flex-wrap:wrap;gap:12px">
@@ -1828,6 +1835,7 @@ let podWindowState=null;  // {enabled, is_open, from, until, opens_in_sec, close
 let activityRefreshTimer=null;
 let lastActivityIds=new Set();
 const ACTIVITY_REFRESH_INTERVAL=15000;  // synchronized with refreshPods cadence
+const PROJECTS=['CV','DV','MT','PT','MARK','ADMIN','TV','MW'];
 const expandedTech=new Set();
 const $=id=>document.getElementById(id);
 const LS='runpod_user';
@@ -2265,8 +2273,14 @@ async function refreshPods(){
   }catch(e){toast('Failed: '+e.message,'er')}finally{b.disabled=false;b.innerHTML='↻ Refresh'}}
 
 async function createPod(){if(!user)return;const b=$('cb');b.disabled=true;b.innerHTML='<span class="sp"></span>';
-  // Identity is bound to the session on the server side. No need to send it in the body.
-  try{const r=await aok('/api/pods','POST',{});toast(r.name+' created!','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
+  // Identity is bound to the session on the server side. Admin may override via body.
+  let body={};
+  if(isAdmin){
+    const apEl=$('adminAssignProject');const cfEl=$('adminCountsFlag');
+    if(apEl){const v=apEl.value;if(v==='__null__')body.assigned_project=null;else if(v&&v!=='')body.assigned_project=v;}
+    if(cfEl)body.counts_toward_quota=cfEl.checked;
+  }
+  try{const r=await aok('/api/pods','POST',body);toast(r.name+' created!','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
 
 async function delPod(id,n){
   showDlg('<h3>Delete?</h3><p style="color:var(--t2);font-size:13px;margin-bottom:18px">Terminate <b style="color:var(--t)">'+n+'</b>?</p><div class="da"><button class="btn" onclick="closeDlg(false)">Cancel</button><button class="btn bs bd" onclick="closeDlg(true)">Delete</button></div>').then(async ok=>{
@@ -2517,6 +2531,15 @@ function render(){
   const windowBlocks=podWindowState&&podWindowState.enabled&&!podWindowState.is_open;
   $('cb').disabled=(!isAdmin)&&(atLimit||windowBlocks);
   $('cb').title=isAdmin?'':(windowBlocks?'Запуск подов в данный момент ограничен':(atLimit?'Достигнут лимит подов':''));
+  // Show/hide admin create controls and populate project options once
+  const acc=$('adminCreateControls');
+  if(acc){
+    acc.style.display=isAdmin?'inline-flex':'none';
+    const apEl=$('adminAssignProject');
+    if(isAdmin&&apEl&&apEl.options.length<=2){
+      PROJECTS.forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;apEl.appendChild(o);});
+    }
+  }
   if(!pods.length){$('pl').innerHTML='<div class="empty"><p>No pods. Click <b>+ New Pod</b>.</p></div>';return}
   $('pl').innerHTML=[...pods].sort((a,b)=>{const d=(a.desiredStatus==='RUNNING'?0:1)-(b.desiredStatus==='RUNNING'?0:1);return d||((a.name||'').localeCompare(b.name||''))}).map(p=>{
     const st=p.desiredStatus||'UNKNOWN',isR=st==='RUNNING',isS=st==='EXITED'||st==='STOPPED',ib=busy.has(p.id),sn=esc(p.name),t=p.telemetry||{};
