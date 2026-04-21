@@ -1477,11 +1477,14 @@ def api_del(pid):
     try:
         # Identity comes from session, not from body. Prevents anonymous deletes.
         nick, proj = g.current_user
-        # Hidden pods are only deletable by admins. A non-admin hitting this
-        # endpoint directly (via console) gets 403, same as if the pod were
-        # completely invisible to them.
-        if is_pod_hidden(pid) and not is_admin():
-            return jsonify({"ok":False,"error":"Pod not found"}),404
+        # Non-admin can only act on pods assigned to their own project.
+        # Pods with no assignment or assigned to another project are invisible
+        # (404) to keep existence private — even showing a different error
+        # leaks info about admin-only pods.
+        if not is_admin():
+            a = get_pod_assignment(pid)
+            if a is None or a["assigned_project"] != proj:
+                return jsonify({"ok":False,"error":"Pod not found"}),404
         pods=list_pods(); pname=next((p["name"] for p in pods if p["id"]==pid), pid)
         delete_pod(pid)
         log_action(nick, proj, "delete", pname, pid)
@@ -1493,10 +1496,14 @@ def api_del(pid):
 def api_start(pid):
     try:
         nick, proj = g.current_user
-        # Same protection as api_del: non-admins get a 404 for hidden pods,
-        # as if they don't exist at all (doesn't leak the fact that they do).
-        if is_pod_hidden(pid) and not is_admin():
-            return jsonify({"ok":False,"error":"Pod not found"}),404
+        # Non-admin can only act on pods assigned to their own project.
+        # Pods with no assignment or assigned to another project are invisible
+        # (404) to keep existence private — even showing a different error
+        # leaks info about admin-only pods.
+        if not is_admin():
+            a = get_pod_assignment(pid)
+            if a is None or a["assigned_project"] != proj:
+                return jsonify({"ok":False,"error":"Pod not found"}),404
         # Resolve pod name for the activity log before starting
         pods=list_pods(); pname=next((p["name"] for p in pods if p["id"]==pid), pid)
         start_pod(pid)
