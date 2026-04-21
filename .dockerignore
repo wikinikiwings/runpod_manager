@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+*.db
+admin_settings.json
+.env
+runpod_manager_header.tmp
+где хранится ключ.txt

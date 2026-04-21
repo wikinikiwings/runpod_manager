@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets / runtime state (must NEVER be committed)
+.env
+admin_settings.json
+*.db
+runpod_manager_header.tmp
+
+# Local notes
+где хранится ключ.txt
+
+# Editor / tooling
+.vscode/
+.idea/
+*.swp
+.claude/

@@ -1,0 +1,15 @@
+services:
+  runpod-manager:
+    build: .
+    container_name: runpod-manager
+    restart: unless-stopped
+    ports:
+      - "5001:5001"
+    environment:
+      - RUNPOD_API_KEY=${RUNPOD_API_KEY}
+      - DATA_DIR=/app/data
+    volumes:
+      - runpod-data:/app/data
+
+volumes:
+  runpod-data:
