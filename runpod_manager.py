@@ -466,27 +466,35 @@ def upsert_pod_assignment(pid, assigned_project, counts_toward_quota,
                           creation_source, assigned_by):
     """INSERT-or-UPDATE pod_assignment. creation_source is preserved from
     an existing row if present (source is immutable after first write).
-    Caller is responsible for computing source correctly on FIRST write."""
+    Caller is responsible for computing source correctly on FIRST write.
+    Raises on DB write failure — callers MUST handle the exception (typically
+    by surfacing it to the user so they know the pod exists but isn't yet
+    assigned, and an admin can recover via /assign)."""
     try:
         db = sqlite3.connect(str(DB_PATH))
-        existing = db.execute("SELECT creation_source FROM pod_assignment WHERE pod_id=?",
-                              (pid,)).fetchone()
-        if existing:
-            # Update the mutable fields, keep original creation_source
-            db.execute("""UPDATE pod_assignment
-                SET assigned_project=?, counts_toward_quota=?, assigned_at=?, assigned_by=?
-                WHERE pod_id=?""",
-                (assigned_project, 1 if counts_toward_quota else 0,
-                 now_iso(), assigned_by, pid))
-        else:
-            db.execute("""INSERT INTO pod_assignment
-                (pod_id, assigned_project, counts_toward_quota, creation_source,
-                 assigned_at, assigned_by)
-                VALUES (?, ?, ?, ?, ?, ?)""",
-                (pid, assigned_project, 1 if counts_toward_quota else 0,
-                 creation_source, now_iso(), assigned_by))
-        db.commit(); db.close()
-    except Exception as e: log.error(f"upsert_pod_assignment: {e}")
+        try:
+            existing = db.execute("SELECT creation_source FROM pod_assignment WHERE pod_id=?",
+                                  (pid,)).fetchone()
+            if existing:
+                # Update the mutable fields, keep original creation_source
+                db.execute("""UPDATE pod_assignment
+                    SET assigned_project=?, counts_toward_quota=?, assigned_at=?, assigned_by=?
+                    WHERE pod_id=?""",
+                    (assigned_project, 1 if counts_toward_quota else 0,
+                     now_iso(), assigned_by, pid))
+            else:
+                db.execute("""INSERT INTO pod_assignment
+                    (pod_id, assigned_project, counts_toward_quota, creation_source,
+                     assigned_at, assigned_by)
+                    VALUES (?, ?, ?, ?, ?, ?)""",
+                    (pid, assigned_project, 1 if counts_toward_quota else 0,
+                     creation_source, now_iso(), assigned_by))
+            db.commit()
+        finally:
+            db.close()
+    except Exception:
+        log.error(f"upsert_pod_assignment failed for pod_id={pid}", exc_info=True)
+        raise
 
 def get_pod_assignment(pid):
     """Returns dict or None. Keys: assigned_project (may be None),
@@ -1446,11 +1454,18 @@ def api_pods_post():
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
         result = create_pod(name, bypass_window=admin)
         pid = result.get("id", "") if isinstance(result, dict) else ""
-        log_action(nick, proj, "create", name, pid)
-        # INSERT pod_assignment so subsequent list_pods() sees this pod in the
-        # right project (and quota/visibility works from the first refresh).
+        # Write the assignment row BEFORE logging the create action. If the upsert
+        # raises, the pod exists on RunPod but has no assignment — surface the
+        # error with the pid so admin can recover via /assign. We still want the
+        # audit trail for the create itself, so log unconditionally after.
         if pid:
-            upsert_pod_assignment(pid, ap, cf, src, nick)
+            try:
+                upsert_pod_assignment(pid, ap, cf, src, nick)
+            except Exception as e:
+                log_action(nick, proj, "create", name, pid)
+                return jsonify({"ok":False,
+                                "error":f"Pod created (id={pid}) but assignment failed: {e}. Admin must /assign."}), 500
+        log_action(nick, proj, "create", name, pid)
         return jsonify({"ok":True,"name":name,
                         "comfyUrl":f"https://{pid}-{PRESET['comfy_port']}.proxy.runpod.net" if pid else None})
     except Exception as e:
