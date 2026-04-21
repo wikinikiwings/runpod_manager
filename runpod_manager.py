@@ -278,12 +278,76 @@ def init_db():
             pod_id TEXT PRIMARY KEY,
             last_active TEXT NOT NULL,
             created_at TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS pod_hidden (
+        CREATE TABLE IF NOT EXISTS pod_assignment (
             pod_id TEXT PRIMARY KEY,
-            hidden_at TEXT NOT NULL,
-            hidden_by TEXT NOT NULL);
+            assigned_project TEXT,
+            counts_toward_quota INTEGER NOT NULL DEFAULT 1,
+            creation_source TEXT NOT NULL DEFAULT 'user',
+            assigned_at TEXT NOT NULL,
+            assigned_by TEXT NOT NULL);
     """)
     db.close()
+    migrate_to_pod_assignment()
+
+
+def migrate_to_pod_assignment():
+    """One-shot migration from pod_hidden → pod_assignment.
+    Idempotent: if pod_hidden doesn't exist (already migrated), does nothing.
+    Also back-fills pod_assignment from pod_actions.create for pods not in pod_hidden.
+    """
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        cur = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pod_hidden'")
+        has_hidden = cur.fetchone() is not None
+
+        hidden_count = 0
+        if has_hidden:
+            # Step 1: hidden pods → assigned_project=NULL, counts=0
+            rows = db.execute("SELECT pod_id FROM pod_hidden").fetchall()
+            now = now_iso()
+            for (pid,) in rows:
+                existing = db.execute("SELECT 1 FROM pod_assignment WHERE pod_id=?", (pid,)).fetchone()
+                if existing:
+                    continue
+                db.execute("""INSERT INTO pod_assignment
+                    (pod_id, assigned_project, counts_toward_quota, creation_source, assigned_at, assigned_by)
+                    VALUES (?, NULL, 0, 'user', ?, 'migration')""", (pid, now))
+                hidden_count += 1
+
+        # Step 2: back-fill from most-recent pod_actions.create per pod_id
+        # (skip pods already in pod_assignment — includes ones just added from pod_hidden)
+        creator_count = 0
+        now = now_iso()
+        rows = db.execute("""
+            SELECT pod_id, nickname, project, MAX(ts) AS max_ts
+            FROM pod_actions
+            WHERE action='create'
+            GROUP BY pod_id
+        """).fetchall()
+        for pid, nickname, project, _max_ts in rows:
+            existing = db.execute("SELECT 1 FROM pod_assignment WHERE pod_id=?", (pid,)).fetchone()
+            if existing:
+                continue
+            if project not in PROJECTS:
+                continue  # bad data, admin can assign manually
+            db.execute("""INSERT INTO pod_assignment
+                (pod_id, assigned_project, counts_toward_quota, creation_source, assigned_at, assigned_by)
+                VALUES (?, ?, 1, 'user', ?, ?)""", (pid, project, now, nickname or 'migration'))
+            creator_count += 1
+
+        # Step 3: drop pod_hidden (only after successful processing)
+        if has_hidden:
+            db.execute("DROP TABLE pod_hidden")
+
+        db.commit()
+        if has_hidden or creator_count > 0:
+            log.info(f"[MIGRATION] pod_assignment populated: {hidden_count} from pod_hidden, {creator_count} from pod_actions")
+    except Exception as e:
+        db.rollback()
+        log.error(f"migrate_to_pod_assignment failed: {e}")
+        raise
+    finally:
+        db.close()
 
 def log_action(nickname, project, action, pod_name="", pod_id=""):
     try:
