@@ -40,10 +40,13 @@ CREATE TABLE IF NOT EXISTS pod_timers (
     created_at TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS pod_hidden (
+CREATE TABLE IF NOT EXISTS pod_assignment (
     pod_id TEXT PRIMARY KEY,
-    hidden_at TEXT NOT NULL,
-    hidden_by TEXT NOT NULL
+    assigned_project TEXT,
+    counts_toward_quota INTEGER NOT NULL DEFAULT 1,
+    creation_source TEXT NOT NULL DEFAULT 'user',
+    assigned_at TEXT NOT NULL,
+    assigned_by TEXT NOT NULL
 );
 ```
 
@@ -118,25 +121,70 @@ CREATE TABLE IF NOT EXISTS pod_hidden (
 **Читается**: `timer_get_all()` (runpod_manager.py:360–373) — batch запрос
 из `list_pods()`.
 
-### `pod_hidden` — скрытые поды
+### `pod_assignment` — project ownership + admin-only visibility
 
-- `pod_id` — primary key.
-- `hidden_at` — когда скрыт.
-- `hidden_by` — ник админа, который скрыл (админ-сессия даёт
-  `session["user_nickname"]` если он был ещё и юзером).
+Replaces the old `pod_hidden` table (see Migration below).
 
-**Пишется**: `hide_pod_id()` (runpod_manager.py:387–403) — INSERT idempotent
-через SELECT WHERE EXISTS.
+DDL:
 
-**Удаляется**:
-- `unhide_pod_id()` (runpod_manager.py:405–413) — idempotent DELETE.
-- Внутри `delete_pod()` (runpod_manager.py:1132) — insurance на случай
-  повторного использования pod ID для нового пода.
+```sql
+CREATE TABLE IF NOT EXISTS pod_assignment (
+    pod_id TEXT PRIMARY KEY,
+    assigned_project TEXT,                           -- NULL = unassigned (admin-only)
+    counts_toward_quota INTEGER NOT NULL DEFAULT 1,  -- 0/1 boolean
+    creation_source TEXT NOT NULL DEFAULT 'user',    -- 'user' | 'admin' | 'external'
+    assigned_at TEXT NOT NULL,
+    assigned_by TEXT NOT NULL
+);
+```
 
-**Читается**:
-- `get_hidden_ids()` — все hidden-id как set, для обогащения в `list_pods()`.
-- `is_pod_hidden(pid)` — single pod check в `api_del`/`api_start` для 403-
-  блокировки не-админа.
+Semantics:
+- `assigned_project` — project this pod belongs to. NULL means "unassigned" —
+  only admin sees the pod; users never see it.
+- `counts_toward_quota` — whether this pod occupies a slot in the project's
+  quota. User-created pods always set 1. Admin-created may set 0 (the admin
+  explicitly chose "не считать в квоту").
+- `creation_source` — driver for UI badges. Set ONCE at first INSERT and
+  preserved on every UPDATE (source immutability):
+  - `'user'` — created by a regular user through the manager.
+  - `'admin'` — created by admin through the manager.
+  - `'external'` — not created through this manager (e.g., via RunPod's web
+    UI). Assigned to `'external'` on first `/assign` call for a pod that has
+    no prior `pod_assignment` row and no `pod_actions.create` entry.
+
+**Пишется:**
+- `upsert_pod_assignment()` — called from `api_pods_post` after a successful
+  pod create (user or admin), and from `api_admin_pod_assign` for reassigns.
+- `migrate_to_pod_assignment()` — one-shot at startup if `pod_hidden` exists.
+
+**Читается:**
+- `get_pod_assignment(pid)` — single-pod lookup, used in `api_del`/`api_start`
+  for visibility check and in `api_admin_pod_assign` to preserve source.
+- `get_assignments_batch(pod_ids)` — bulk fetch used in `list_pods()` to
+  annotate each pod with `assignedProject`, `countsTowardQuota`,
+  `creationSource` fields.
+
+**Удаляется:**
+- `delete_pod_assignment(pid)` — called from `delete_pod()` to clean up on
+  pod removal.
+
+### Migration from `pod_hidden` → `pod_assignment`
+
+One-shot, runs inside `init_db()` at process startup. Idempotent: if
+`pod_hidden` no longer exists (already migrated), the migration does nothing.
+
+Steps:
+1. If `pod_hidden` table exists: for every row, INSERT into pod_assignment
+   with `assigned_project=NULL, counts_toward_quota=0, creation_source='user',
+   assigned_by='migration'`.
+2. For every most-recent `pod_actions.create` (grouped by `pod_id`), if not
+   already in pod_assignment AND `project in PROJECTS`: INSERT with
+   `assigned_project=<project>, counts_toward_quota=1, creation_source='user',
+   assigned_by=<nickname>`.
+3. If we touched `pod_hidden`: DROP TABLE pod_hidden.
+
+Covered by `tests/test_migration.py` (stdlib unittest; runs via
+`python -m unittest tests.test_migration`).
 
 ## Бэкап
 
@@ -167,8 +215,9 @@ docker compose restart runpod-manager
   следующем `list_pods()` когда ComfyUI снова станет ready. **Будет окно в
   пару минут, когда idle-timeout не работает** (пока все running-поды не
   получат новые таймеры).
-- `pod_hidden` — все hidden-поды станут видимыми для всех. Не страшно, но
-  надо будет руками проскрыть нужные.
+- `pod_assignment` — все assign-данные потеряются. Все поды станут
+  unassigned (видны только админу). Unassigned-поды не считаются в квоты.
+  Нужно будет заново назначить проекты через `/assign` для каждого пода.
 
 Ни одна из этих потерь не ломает работу с подами. Поэтому БД считается
 «мягким» state-ом: важна для UX и аудита, но не для управления подами.

@@ -13,7 +13,7 @@ routes, inline frontend и `main`.
 | ComfyUI service health (порт 8188) | 89–131 | `check_pod_service()` → `/system_stats`, TTL 15s, параллельно через `ThreadPoolExecutor(8)` |
 | Boot status (порт 8189) | 133–185 | `check_pod_boot_status()` → `/status.json` (stage/pct/msg/elapsed), TTL 5s |
 | Runtime activity (порт 8189) | 187–245 | `check_pod_runtime_status()` → `/runtime.json` (active/queue/started/completed), TTL 10s |
-| SQLite слой | 247–439 | `init_db()`, `log_action()`, `touch_user()`, `get_pod_creators()`, pod_timers (init/touch/delete/get_all), pod_hidden (hide/unhide/get_ids/is_hidden) |
+| SQLite слой | 247–439 | `init_db()`, `log_action()`, `touch_user()`, `get_pod_creators()`, pod_timers (init/touch/delete/get_all), pod_assignment (upsert/get/get_batch/delete/determine_source), `migrate_to_pod_assignment()` |
 | Settings | 441–456 | `load_settings()` / `save_settings()` под `_settings_lock`, auto-backfill недостающих ключей из `DEFAULT_SETTINGS` |
 | Pod creation window | ~458–550 | `check_pod_window()` — логика запретного окна создания подов (strategy A) |
 | User validation + session | 560–630 | `validate_user_input()`, `get_session_user()`, декораторы `@require_user`, `@require_admin`, `is_admin()` |
@@ -113,7 +113,10 @@ PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
    `_cli_path` и `_cli_is_new` (новая версия имеет JSON-вывод).
 4. `resolve_api_key()` — CLI arg → env `RUNPOD_API_KEY` → `~/.runpod/config.toml`.
    Пишет в глобальную `_api_key`.
-5. `init_db()` — `CREATE TABLE IF NOT EXISTS` для всех 4 таблиц.
+5. `init_db()` — `CREATE TABLE IF NOT EXISTS` для всех таблиц, и также запускает
+   `migrate_to_pod_assignment()` one-shot. Миграция идемпотентна: если `pod_hidden`
+   не существует (уже мигрировано), это no-op; иначе копирует старые данные в
+   `pod_assignment`, back-fills из `pod_actions`, и удаляет `pod_hidden`.
 6. Стартует scheduler-тред: `threading.Thread(target=scheduler_loop, daemon=True).start()`
    (`daemon=True` → умрёт вместе с Flask без явного shutdown).
 7. `app.run(host=..., port=..., debug=...)`.
