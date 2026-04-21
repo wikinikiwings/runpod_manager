@@ -1663,14 +1663,11 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
    Yellow border matches other warning-state cues in the app (busy tag, etc).
    Opacity dims the whole card so the admin immediately spots which pods are
    off-limits to regular users, without reading any text. */
-.pc.hidden-pod{border-color:var(--wr);opacity:0.6}
-.pc.hidden-pod:hover{opacity:0.85;border-color:var(--wr)}
-/* Eye icon button for hiding/showing pods (admin only). Sized to match the
-   existing .cp copy button so action rows stay visually aligned. */
-.eye{font-family:var(--mono);line-height:1;color:var(--t2);background:transparent;padding:5px 8px;border:1px solid var(--bd);border-radius:var(--rs);cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;justify-content:center;min-width:30px}
-.eye:hover:not(:disabled){border-color:var(--wr);color:var(--wr);background:rgba(251,191,36,.06)}
-.eye.is-hidden{border-color:var(--wr);color:var(--wr);background:rgba(251,191,36,.08)}
-.eye svg{width:15px;height:15px;display:block}
+.pc.pc-unassigned{border-color:var(--wr);opacity:0.6}
+.pc.pc-unassigned:hover{opacity:0.85;border-color:var(--wr)}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:100;display:flex;align-items:center;justify-content:center}
+.modal-body{background:var(--bg);padding:20px;border-radius:8px;min-width:320px;max-width:400px}
+.modal-body h3{margin:0 0 12px 0}
 .pbadges{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
 .pbadge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;line-height:1.2}
 .pb-proj{background:#2a4a7a;color:#fff}
@@ -2299,26 +2296,6 @@ async function delPod(id,n){
 
 async function startPod(id,n){busy.add(id);render();try{await aok('/api/pods/'+id+'/start','POST',{});toast(n+' started','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{busy.delete(id)}}
 
-// SVG icons for the eye toggle (admin only). Open eye = pod visible to everyone,
-// closed eye (with the slash) = pod hidden from regular users. Both are simple
-// stroke-based paths that inherit color from the parent button via currentColor.
-const SVG_EYE_OPEN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>';
-const SVG_EYE_CLOSED='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19m-6.72-1.07a3 3 0 11-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>';
-
-// Toggle the hidden state of a pod (admin action). Sends to the appropriate
-// endpoint and refreshes the pod list so the row visually updates immediately.
-// Also refreshes the activity log so the admin sees their hide/show action appear
-// in real time (if the sidebar is open).
-async function togglePodVisibility(id,currentlyHidden){
-  const endpoint=currentlyHidden?'/api/admin/pods/'+id+'/unhide':'/api/admin/pods/'+id+'/hide';
-  try{
-    await aok(endpoint,'POST',{});
-    await refreshPods();
-    refreshActivityLog();
-  }catch(e){
-    toast(e.message||'Failed to toggle visibility','er');
-  }
-}
 
 function toggleTech(id){
   if(expandedTech.has(id))expandedTech.delete(id);
@@ -2622,7 +2599,7 @@ function render(){
         actions+='<a class="lb'+(svcReady?'':' disabled')+'" href="'+p.comfyUrl+'" target="_blank" title="'+(svcReady?'Open ComfyUI':'ComfyUI not ready yet')+'">Open ↗</a>';
       }
       if(isS)actions+='<button class="btn bs bg" onclick="startPod(\''+p.id+"','"+sn+"')\">▶ Start</button>";
-      // Eye icon removed — Task 11 will add an Assign button + modal instead.
+      if(isAdmin)actions+='<button class="btn bs" title="Назначить проекту" onclick="openAssignModal(\''+p.id+'\',\''+(p.assignedProject||'')+'\','+(p.countsTowardQuota?'true':'false')+')">Назначить</button>';
       actions+='<button class="btn bs bd" onclick="delPod(\''+p.id+"','"+sn+"')\">✕</button>";
     }
 
@@ -2670,11 +2647,12 @@ function render(){
       (isR?'<div class="tech-metrics">'+bar('GPU',t.gpuUtil||0)+bar('VRAM',t.gpuMem||0)+bar('CPU',t.cpuUtil||0)+bar('RAM',t.ramUtil||0)+'</div>':'')+
     '</div>';
 
-    // Card class: unassigned pods get hidden-pod (yellow border, admin-visible only).
-    // Additional border accents for admin-created and external pods.
+    // Card class: unassigned pods get pc-unassigned (yellow border, admin-visible only).
+    // "Unassigned" means the pod is not assigned to any project — only admins can see
+    // and interact with it. Additional border accents for admin-created and external pods.
     const isUnassigned = p.assignedProject === null;
     const cardCls = 'pc'
-      + (isUnassigned ? ' hidden-pod' : '')
+      + (isUnassigned ? ' pc-unassigned' : '')
       + (p.creationSource === 'admin' ? ' pc-admin-created' : '')
       + (p.creationSource === 'external' ? ' pc-external' : '');
 
@@ -2707,7 +2685,55 @@ function render(){
   }).join('')}
 
 initLogin().then(loggedIn=>{if(loggedIn)refreshPods()});setInterval(refreshPods,15000);
-</script></body></html>
+
+let _assignPid = null;
+
+function openAssignModal(pid, currentProject, currentCounts){
+  _assignPid = pid;
+  const sel = $('assignProj');
+  sel.innerHTML = '<option value="__null__">Не назначать (только админ видит)</option>'+
+    PROJECTS.map(p=>'<option value="'+p+'">'+p+'</option>').join('');
+  sel.value = currentProject ? currentProject : '__null__';
+  $('assignCounts').checked = !!currentCounts;
+  $('assignModal').style.display = 'flex';
+}
+
+function closeAssignModal(){
+  $('assignModal').style.display = 'none';
+  _assignPid = null;
+}
+
+async function submitAssign(){
+  if(!_assignPid) return;
+  const pv = $('assignProj').value;
+  const project = pv === '__null__' ? null : pv;
+  const counts_toward_quota = $('assignCounts').checked;
+  try{
+    await aok('/api/admin/pods/'+_assignPid+'/assign','POST',{project, counts_toward_quota});
+    closeAssignModal();
+    refreshPods();
+    if(typeof refreshActivityLog === 'function') refreshActivityLog();
+  }catch(e){
+    alert('Failed: '+(e && e.message || e));
+  }
+}
+</script>
+<div id="assignModal" class="modal" style="display:none">
+  <div class="modal-body">
+    <h3>Назначить под проекту</h3>
+    <div class="fr"><label>Проект</label>
+      <select id="assignProj">
+        <option value="__null__">Не назначать (только админ видит)</option>
+      </select>
+    </div>
+    <div class="fr"><label><input type="checkbox" id="assignCounts"> Считать в квоту проекта</label></div>
+    <div class="da" style="margin-top:12px">
+      <button class="btn" onclick="closeAssignModal()">Отмена</button>
+      <button class="btn bs bp" onclick="submitAssign()">Сохранить</button>
+    </div>
+  </div>
+</div>
+</body></html>
 """
 
 @app.route("/")
