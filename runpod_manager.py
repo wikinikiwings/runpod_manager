@@ -1671,6 +1671,15 @@ header{display:flex;align-items:center;justify-content:space-between;margin-bott
 .eye:hover:not(:disabled){border-color:var(--wr);color:var(--wr);background:rgba(251,191,36,.06)}
 .eye.is-hidden{border-color:var(--wr);color:var(--wr);background:rgba(251,191,36,.08)}
 .eye svg{width:15px;height:15px;display:block}
+.pbadges{display:flex;gap:4px;flex-wrap:wrap;margin:4px 0}
+.pbadge{display:inline-block;padding:2px 6px;border-radius:10px;font-size:10px;font-weight:600;line-height:1.2}
+.pb-proj{background:#2a4a7a;color:#fff}
+.pb-admin{background:#4a3a7a;color:#fff}
+.pb-ext{background:#7a4a2a;color:#fff}
+.pb-unassigned{background:#7a7a2a;color:#fff}
+.pb-nocount{background:#555;color:#fff;padding:2px 5px}
+.pc-admin-created{border-left:3px solid #7a4a7a}
+.pc-external{border-left:3px solid #7a5a2a}
 .pc-main{display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center}
 .pc-info{display:flex;flex-direction:column;gap:6px;min-width:0}
 .pn{font-family:var(--mono);font-size:14px;font-weight:600;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
@@ -2613,15 +2622,7 @@ function render(){
         actions+='<a class="lb'+(svcReady?'':' disabled')+'" href="'+p.comfyUrl+'" target="_blank" title="'+(svcReady?'Open ComfyUI':'ComfyUI not ready yet')+'">Open ↗</a>';
       }
       if(isS)actions+='<button class="btn bs bg" onclick="startPod(\''+p.id+"','"+sn+"')\">▶ Start</button>";
-      // Eye icon — admin-only control to hide/show the pod from regular users.
-      // We check isAdmin (the global populated from /api/pods response) and also
-      // that p.hidden has a defined boolean (extra guard; server always sends it).
-      if(isAdmin&&typeof p.hidden==='boolean'){
-        const isH=p.hidden===true;
-        const ttl=isH?'Показать всем':'Скрыть из общего списка';
-        const svg=isH?SVG_EYE_CLOSED:SVG_EYE_OPEN;
-        actions+='<button class="eye'+(isH?' is-hidden':'')+'" title="'+ttl+'" onclick="togglePodVisibility(\''+p.id+'\','+isH+')">'+svg+'</button>';
-      }
+      // Eye icon removed — Task 11 will add an Assign button + modal instead.
       actions+='<button class="btn bs bd" onclick="delPod(\''+p.id+"','"+sn+"')\">✕</button>";
     }
 
@@ -2669,10 +2670,23 @@ function render(){
       (isR?'<div class="tech-metrics">'+bar('GPU',t.gpuUtil||0)+bar('VRAM',t.gpuMem||0)+bar('CPU',t.cpuUtil||0)+bar('RAM',t.ramUtil||0)+'</div>':'')+
     '</div>';
 
-    // Add hidden-pod class to the card if this pod is hidden. Only admins ever
-    // see this class applied — for regular users the pod is filtered out entirely
-    // by the server, so p.hidden will be false/undefined here anyway.
-    const cardCls='pc'+(p.hidden===true?' hidden-pod':'');
+    // Card class: unassigned pods get hidden-pod (yellow border, admin-visible only).
+    // Additional border accents for admin-created and external pods.
+    const isUnassigned = p.assignedProject === null;
+    const cardCls = 'pc'
+      + (isUnassigned ? ' hidden-pod' : '')
+      + (p.creationSource === 'admin' ? ' pc-admin-created' : '')
+      + (p.creationSource === 'external' ? ' pc-external' : '');
+
+    // Badge strip: project tag + creation source + admin-only status badges.
+    const badges = [];
+    if(p.assignedProject) badges.push('<span class="pbadge pb-proj">'+p.assignedProject+'</span>');
+    if(p.creationSource === 'admin') badges.push('<span class="pbadge pb-admin">🛡 admin created</span>');
+    if(p.creationSource === 'external') badges.push('<span class="pbadge pb-ext">🌐 external</span>');
+    if(isAdmin && isUnassigned) badges.push('<span class="pbadge pb-unassigned">👁 unassigned</span>');
+    if(isAdmin && p.countsTowardQuota === false && p.assignedProject) badges.push('<span class="pbadge pb-nocount" title="не учитывается в квоте">∞</span>');
+    const badgeHtml = badges.length ? '<div class="pbadges">'+badges.join('')+'</div>' : '';
+
     return'<div class="'+cardCls+'">'+
       '<div class="pc-main">'+
         '<div class="pc-info">'+
@@ -2683,6 +2697,7 @@ function render(){
             (busyTag?busyTag:'')+
             '<button class="info-btn'+(techOpen?' open':'')+'" onclick="toggleTech(\''+p.id+'\')" title="Technical details">i</button>'+
           '</div>'+
+          badgeHtml+
           creatorLine+
         '</div>'+
         '<div class="pa">'+actions+'</div>'+
