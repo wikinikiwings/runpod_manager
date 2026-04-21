@@ -1261,10 +1261,19 @@ def start_pod(pid):
     with _runtime_cache_lock:
         _runtime_cache.pop(pid, None)
     timer_delete(pid)
-def next_name(pods):
-    pat=re.compile(rf"^{re.escape(PRESET['pod_name_prefix'])}(\d+)$")
+def pod_name_prefix(project):
+    """Return the pod-name prefix for a given project (or None for unassigned).
+    CV -> 'cv_pod_', DV -> 'dv_pod_', ADMIN -> 'admin_pod_', ..., None -> 'pod_'.
+    Nummeration is per-prefix so names don't collide across projects."""
+    return f"{project.lower()}_pod_" if project else PRESET['pod_name_prefix']
+
+def next_name(pods, project=None):
+    """Next free name within the given project's namespace. If project is None,
+    uses the legacy global 'pod_' prefix (unassigned pods)."""
+    prefix = pod_name_prefix(project)
+    pat=re.compile(rf"^{re.escape(prefix)}(\d+)$")
     mx=max((int(pat.match(p.get('name','')).group(1)) for p in pods if pat.match(p.get('name',''))),default=0)
-    return f"{PRESET['pod_name_prefix']}{mx+1}"
+    return f"{prefix}{mx+1}"
 
 def delete_all_pods(source="manual"):
     try:
@@ -1450,7 +1459,10 @@ def api_pods_post():
             src = 'user'
 
         pods = list_pods()
-        name = next_name(pods)
+        # Per-project pod naming: ap is either a project key or None (unassigned).
+        # next_name scans only the pods with the matching prefix so each project
+        # gets its own 1,2,3,... counter.
+        name = next_name(pods, ap)
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
         result = create_pod(name, bypass_window=admin)
         pid = result.get("id", "") if isinstance(result, dict) else ""
