@@ -1579,50 +1579,43 @@ def api_admin_delete_all():
     s=get_settings(); s["auto_delete_last_log"]=f"[{now_iso()}] Manual: {msg}"; save_settings(s)
     return jsonify({"ok":True,"deleted":cnt,"message":msg})
 
-@app.route("/api/admin/pods/<pid>/hide", methods=["POST"])
+@app.route("/api/admin/pods/<pid>/assign", methods=["POST"])
 @require_admin
-def api_admin_pod_hide(pid):
-    """Mark a pod as hidden. Hidden pods disappear from the list for regular
-    users and can only be acted on by admins. Idempotent — already-hidden pod
-    is a no-op that still returns ok. Logged to Activity Log as 'hide' action."""
+def api_admin_pod_assign(pid):
+    """Assign or reassign a pod to a project, or leave unassigned (admin-only
+    visibility). Body: {"project": "CV"|"DV"|...|null, "counts_toward_quota": bool}.
+    Works on any pod that exists in RunPod's listing — including ones created
+    outside this manager (creation_source='external' on first assign)."""
     try:
-        # Resolve the caller's nickname/project from session so the Activity Log
-        # shows WHICH admin hid the pod. If the admin isn't also registered as a
-        # regular user (rare but possible), fall back to 'ADMIN'.
-        nick, proj = get_session_user()
-        if not nick:
-            nick, proj = "ADMIN", "[SYSTEM]"
-        # Resolve pod name for the log entry before marking. Hiding doesn't delete
-        # the pod, so it'll still be in list_pods() — just annotated as hidden.
-        pods = list_pods()
-        pname = next((p["name"] for p in pods if p["id"]==pid), pid)
-        was_new = hide_pod_id(pid, nick)
-        if was_new:
-            log_action(nick, proj, "hide", pname, pid)
-        return jsonify({"ok":True, "hidden":True, "wasNew":was_new})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        data = request.get_json(silent=True) or {}
+        ap = data.get("project")
+        if ap is not None and ap not in PROJECTS:
+            return jsonify({"ok":False,"error":"Unknown project"}), 400
+        cf = bool(data.get("counts_toward_quota", False))
 
-@app.route("/api/admin/pods/<pid>/unhide", methods=["POST"])
-@require_admin
-def api_admin_pod_unhide(pid):
-    """Remove the hidden mark from a pod — it becomes visible to all users again.
-    Idempotent. Logged as 'show' action."""
-    try:
+        # Resolve the caller's nickname/project for the audit log.
         nick, proj = get_session_user()
         if not nick:
             nick, proj = "ADMIN", "[SYSTEM]"
+
+        # Resolve pod name for the log entry.
         pods = list_pods()
-        pname = next((p["name"] for p in pods if p["id"]==pid), pid)
-        # Only log if the pod was actually hidden before this call — unhiding
-        # something that wasn't hidden shouldn't pollute the log.
-        was_hidden = is_pod_hidden(pid)
-        unhide_pod_id(pid)
-        if was_hidden:
-            log_action(nick, proj, "show", pname, pid)
-        return jsonify({"ok":True, "hidden":False})
+        pname = next((p["name"] for p in pods if p["id"] == pid), pid)
+
+        # creation_source: if the pod has no prior pod_assignment, we compute it.
+        # If it does, upsert_pod_assignment preserves whatever was there.
+        existing = get_pod_assignment(pid)
+        if existing:
+            src = existing["creation_source"]  # preserved
+        else:
+            src = determine_creation_source_for_unknown(pid)
+
+        upsert_pod_assignment(pid, ap, cf, src, nick)
+        log_action(nick, proj, "assign", pname, pid)
+        return jsonify({"ok": True, "assignedProject": ap,
+                        "countsTowardQuota": cf, "creationSource": src})
     except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/admin/activity")
 @require_admin
