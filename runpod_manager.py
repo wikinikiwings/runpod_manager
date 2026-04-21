@@ -1751,6 +1751,8 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
 .sb-left{border-right:1px solid var(--bd);padding-right:24px}
 .sb-section{margin-bottom:20px}
 .sb-section h3{font-family:var(--mono);font-size:13px;color:var(--t2);margin-bottom:10px}
+.quota-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px 12px}
+.quota-grid .fr{margin:0}
 .sb-dim{font-family:var(--mono);font-size:10px;color:var(--t3);margin-top:4px;font-style:italic}
 .act-row{font-family:var(--mono);font-size:10px;padding:5px 0;border-bottom:1px solid rgba(255,255,255,.04);display:grid;grid-template-columns:140px 1fr auto auto;gap:6px;align-items:center}
 .act-row .at{color:var(--t3)}.act-row .au{color:var(--in)}.act-row .aa{color:var(--wr)}.act-row .ap{color:var(--t)}
@@ -1985,7 +1987,14 @@ async function loadAdminPanel(){
   lastActivityIds=new Set(acts.map(a=>a.id));
   $('sbContent').innerHTML='<div class="sb-cols">'+
     '<div class="sb-left">'+
-      '<div class="sb-section"><h3>Limits</h3><div class="fr"><label>Max pods</label><input type="number" id="sMax" min="1" max="50" value="'+s.max_pods+'"></div></div>'+
+      '<div class="sb-section"><h3>Per-project quotas</h3>'+
+        '<div class="quota-grid">'+
+          Object.keys(s.project_quotas).map(p=>
+            '<div class="fr"><label>'+p+'</label><input type="number" class="qInput" data-proj="'+p+'" min="0" max="50" value="'+s.project_quotas[p]+'"></div>'
+          ).join('')+
+        '</div>'+
+        '<div class="sb-dim">Лимит одновременно запущенных подов на каждый проект. Админ обходит лимит.</div>'+
+      '</div>'+
       '<div class="sb-section"><h3>⏱ Idle timeout</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sIdleOn" '+(s.idle_timeout_enabled?'checked':'')+
         '><span class="sw"></span> Auto-delete idle pods</label></div>'+
@@ -2142,7 +2151,11 @@ function formatScheduleLog(raw){
 }
 
 async function sbSave(){
-  try{await aok('/api/admin/settings','POST',{max_pods:parseInt($('sMax').value)||5,
+  const quotas = {};
+  document.querySelectorAll('.qInput').forEach(el => {
+    quotas[el.dataset.proj] = parseInt(el.value,10) || 0;
+  });
+  try{await aok('/api/admin/settings','POST',{project_quotas:quotas,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
     idle_timeout_enabled:$('sIdleOn').checked,idle_timeout_minutes:parseInt($('sIdleMin').value)||120,
     pod_window_enabled:$('sWinOn').checked,
