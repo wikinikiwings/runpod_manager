@@ -80,6 +80,14 @@ DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
     "project_quotas":{p: DEFAULT_PROJECT_QUOTA for p in PROJECTS},
     "auto_delete_enabled":False,"auto_delete_time":"21:00",
     "auto_delete_last_run":"","auto_delete_last_log":"",
+    # Per-project auto-delete offset in MINUTES. For each project, the effective
+    # daily auto-delete fires at (auto_delete_time + offset_minutes). 0 = no
+    # offset (delete at base time). Value range 0..1440 (up to 24h). Unassigned
+    # pods ignore this dict entirely and always fire at base time.
+    "project_autodelete_offset_minutes":{p: 0 for p in PROJECTS},
+    # Per-project last-fire date guard ({project_name|__unassigned__: "YYYY-MM-DD"}).
+    # Prevents double-firing within the same UTC day. Populated at runtime.
+    "project_autodelete_last_run":{},
     "idle_timeout_enabled":True,"idle_timeout_minutes":120,
     # Pod creation restriction window (strategy A: only blocks NEW pods).
     # Times are UTC 'HH:MM'. 'from' and 'until' define the period when creation is
@@ -1291,6 +1299,31 @@ def delete_all_pods(source="manual"):
         return ok, f"Deleted {ok}/{len(running)}"
     except Exception as e: return 0, str(e)
 
+def delete_project_pods(project):
+    """Delete RUNNING pods scoped to a single project (or None = unassigned
+    bucket, i.e. pods with assigned_project IS NULL). Used by the scheduler's
+    per-project daily auto-delete. Returns (count_deleted, message)."""
+    try:
+        pods = list_pods()
+        # Match by assignedProject — includes pods with counts_toward_quota=0
+        # (the flag is about quota accounting, not cleanup scope).
+        target = [p for p in pods
+                  if p.get("desiredStatus") == "RUNNING"
+                  and p.get("assignedProject") == project]
+        if not target:
+            return 0, f"No running pods in {project or 'unassigned'}"
+        ok = 0
+        for p in target:
+            try:
+                delete_pod(p["id"]); ok += 1
+                log_action("AUTODELETE", "[SYSTEM]", "autodelete",
+                           p.get("name",""), p["id"])
+            except Exception as e:
+                log.error(f"Failed to delete {p.get('name','')}: {e}")
+        return ok, f"{project or 'unassigned'}: {ok}/{len(target)}"
+    except Exception as e:
+        return 0, str(e)
+
 def check_idle_timeouts():
     """Run by scheduler. Delete pods that have been idle longer than threshold."""
     try:
@@ -1325,14 +1358,46 @@ def scheduler_loop():
             s = get_settings()
             if s.get("auto_delete_enabled") and s.get("auto_delete_time"):
                 # auto_delete_time is interpreted as UTC — admin UI labels it as such.
-                # This keeps scheduler behavior consistent regardless of container TZ.
+                # Per-project offsets (in minutes) shift each project's fire time.
+                # Unassigned pods always fire at the base time (offset=0).
                 now = now_utc(); today = now.strftime("%Y-%m-%d")
                 h,m = map(int, s["auto_delete_time"].split(":"))
-                if now.hour==h and now.minute==m and s.get("auto_delete_last_run","")!=today:
-                    log.info(f"⏰ Auto-delete triggered at {s['auto_delete_time']} UTC")
-                    cnt, msg = delete_all_pods(source="auto")
-                    s2=get_settings(); s2["auto_delete_last_run"]=today
-                    s2["auto_delete_last_log"]=f"[{now_iso()}] {msg}"; save_settings(s2)
+                base_total = h * 60 + m
+                offsets = s.get("project_autodelete_offset_minutes") or {}
+                last_run = dict(s.get("project_autodelete_last_run") or {})
+                fires = []  # (project_or_None, count_msg) collected this tick
+
+                def _effective(off_min):
+                    total = (base_total + int(off_min or 0)) % 1440
+                    return total // 60, total % 60
+
+                # Per-project fires
+                for proj in PROJECTS:
+                    try:
+                        off = int(offsets.get(proj, 0) or 0)
+                    except (TypeError, ValueError):
+                        off = 0
+                    eff_h, eff_m = _effective(off)
+                    if now.hour == eff_h and now.minute == eff_m and last_run.get(proj) != today:
+                        log.info(f"⏰ Auto-delete {proj} at {eff_h:02d}:{eff_m:02d} UTC (offset {off}m)")
+                        _cnt, msg = delete_project_pods(proj)
+                        last_run[proj] = today
+                        fires.append(msg)
+
+                # Unassigned bucket — always at base time, offset=0.
+                if now.hour == h and now.minute == m and last_run.get("__unassigned__") != today:
+                    log.info(f"⏰ Auto-delete unassigned at {h:02d}:{m:02d} UTC")
+                    _cnt, msg = delete_project_pods(None)
+                    last_run["__unassigned__"] = today
+                    fires.append(msg)
+
+                if fires:
+                    s2 = get_settings()
+                    s2["project_autodelete_last_run"] = last_run
+                    # Keep the legacy fields updated for admin UI "Last: ..." display.
+                    s2["auto_delete_last_run"] = today
+                    s2["auto_delete_last_log"] = f"[{now_iso()}] " + "; ".join(fires)
+                    save_settings(s2)
             check_idle_timeouts()
         except Exception as e:
             log.error(f"scheduler_loop: {e}")
@@ -1545,8 +1610,14 @@ def api_admin_settings_get():
     for p in PROJECTS:
         if p not in quotas:
             quotas[p] = DEFAULT_PROJECT_QUOTA
+    # Same backfill for per-project auto-delete offsets (minutes).
+    offsets = dict(s.get("project_autodelete_offset_minutes") or {})
+    for p in PROJECTS:
+        if p not in offsets:
+            offsets[p] = 0
     return jsonify({"ok":True,"settings":{
         "project_quotas": quotas,
+        "project_autodelete_offset_minutes": offsets,
         **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until"]}
     }})
 
@@ -1565,6 +1636,17 @@ def api_admin_settings_post():
             except (TypeError, ValueError):
                 pass
         s["project_quotas"] = quotas
+    # Per-project auto-delete offset in minutes. 0-1440. Unknown project keys ignored.
+    if isinstance(data.get("project_autodelete_offset_minutes"), dict):
+        offsets = dict(s.get("project_autodelete_offset_minutes") or {})
+        for proj, val in data["project_autodelete_offset_minutes"].items():
+            if proj not in PROJECTS:
+                continue
+            try:
+                offsets[proj] = max(0, min(1440, int(val)))
+            except (TypeError, ValueError):
+                pass
+        s["project_autodelete_offset_minutes"] = offsets
     if "new_password" in data and data["new_password"].strip(): s["admin_password"]=data["new_password"].strip()
     if "auto_delete_enabled" in data: s["auto_delete_enabled"]=bool(data["auto_delete_enabled"])
     if "auto_delete_time" in data:
@@ -2030,8 +2112,16 @@ async function loadAdminPanel(){
       '<div class="sb-section"><h3>⏰ Auto-delete (daily)</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sSchedOn" '+(s.auto_delete_enabled?'checked':'')+
         '><span class="sw"></span> Daily auto-delete</label></div>'+
-        '<div class="fr"><label>Time</label><input type="time" id="sSchedTime" value="'+utcTimeToLocal(s.auto_delete_time)+'" oninput="updateSchedHint()"></div>'+
+        '<div class="fr"><label>Time</label><input type="time" id="sSchedTime" value="'+utcTimeToLocal(s.auto_delete_time)+'" oninput="updateSchedHint();updateOffsetHints()"></div>'+
         '<div class="sb-dim" id="sSchedHint"></div>'+
+        '<div style="margin-top:8px;font-size:12px;color:var(--t2)">Per-project offset (minutes — bypass delay):</div>'+
+        '<div class="quota-grid" style="margin-top:4px">'+
+          Object.keys(s.project_autodelete_offset_minutes||{}).map(p=>
+            '<div class="fr"><label>'+p+' <span class="offEff" data-proj="'+p+'" style="color:var(--t3);font-size:10px;margin-left:4px"></span></label>'+
+            '<input type="number" class="offInput" data-proj="'+p+'" min="0" max="1440" value="'+(s.project_autodelete_offset_minutes[p]||0)+'" oninput="updateOffsetHints()"></div>'
+          ).join('')+
+        '</div>'+
+        '<div class="sb-dim" style="margin-top:4px">0 = удалять в базовое время. Unassigned-поды всегда удаляются в базовое время.</div>'+
         (s.auto_delete_last_log?'<div class="sb-dim">Last: '+formatScheduleLog(s.auto_delete_last_log)+'</div>':'')+
         '<div style="margin-top:10px"><button class="btn bs bd" onclick="deleteAllNow()">Delete all now</button></div></div>'+
       '<div class="sb-section"><h3>🔒 Pod creation restriction (daily)</h3>'+
@@ -2060,6 +2150,7 @@ async function loadAdminPanel(){
   // Initialize the schedule hint with current values (server UTC + computed local representation)
   updateSchedHint();
   updateWindowHint();
+  updateOffsetHints();
 }
 async function filterLog(){const f=$('fFrom').value,t=$('fTo').value;const acts=await loadActivity(f,t);lastActivityIds=new Set(acts.map(a=>a.id));$('actLog').innerHTML=renderActivity(acts)}
 async function filterLogAll(){$('fFrom').value='';$('fTo').value='';const acts=await loadActivity('','');lastActivityIds=new Set(acts.map(a=>a.id));$('actLog').innerHTML=renderActivity(acts)}
@@ -2181,13 +2272,34 @@ async function sbSave(){
   document.querySelectorAll('.qInput').forEach(el => {
     quotas[el.dataset.proj] = parseInt(el.value,10) || 0;
   });
+  const offsets = {};
+  document.querySelectorAll('.offInput').forEach(el => {
+    offsets[el.dataset.proj] = parseInt(el.value,10) || 0;
+  });
   try{await aok('/api/admin/settings','POST',{project_quotas:quotas,
+    project_autodelete_offset_minutes:offsets,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
     idle_timeout_enabled:$('sIdleOn').checked,idle_timeout_minutes:parseInt($('sIdleMin').value)||120,
     pod_window_enabled:$('sWinOn').checked,
     pod_window_from:localTimeToUtc($('sWinFrom').value),
     pod_window_until:localTimeToUtc($('sWinUntil').value),
     new_password:$('sNewPw').value||undefined});toast('Saved','ok');await refreshPods()}catch(e){toast(e.message,'er')}
+}
+
+// Paint effective-time hints next to each per-project offset input.
+// Called on offset change and on base-time change.
+function updateOffsetHints(){
+  const baseLocal = $('sSchedTime') && $('sSchedTime').value;  // HH:MM local
+  if(!baseLocal) return;
+  const [bh, bm] = baseLocal.split(':').map(n=>parseInt(n,10)||0);
+  document.querySelectorAll('.offInput').forEach(el=>{
+    const off = parseInt(el.value,10) || 0;
+    const total = (bh*60 + bm + off) % 1440;
+    const eh = String(Math.floor(total/60)).padStart(2,'0');
+    const em = String(total%60).padStart(2,'0');
+    const hint = document.querySelector('.offEff[data-proj="'+el.dataset.proj+'"]');
+    if(hint) hint.textContent = '→ '+eh+':'+em;
+  });
 }
 async function deleteAllNow(){
   if(!confirm('Delete ALL running pods now?'))return;
