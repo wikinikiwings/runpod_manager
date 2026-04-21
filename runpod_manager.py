@@ -1172,29 +1172,19 @@ def create_pod(name, bypass_window=False):
         w = check_pod_window()
         if not w["is_open"]:
             raise RuntimeError(f"Запуск подов ограничен. Снова будет доступен в {w['until']} UTC.")
-    # Limit check: admins bypass the limit entirely (same as pod_window bypass)
-    # — trusted super-user, Scenario B.
-    #
-    # For regular users: `max_pods` caps the total number of VISIBLE running
-    # pods. 'Visible' here means 'not hidden' — skipped because regular users
-    # never see hidden pods in the UI, so they shouldn't count toward the cap
-    # from the user's perspective. Hidden pods live in the admin's separate
-    # bucket shown as '+N · создано админом'.
-    #
-    # External pods (no createdBy) DO count toward the cap — they're visible
-    # to users and occupy a slot just like any other pod. This matches the
-    # intuitive model: 'I see N pods, my cap is max_pods, I'm full at N=max'.
-    #
-    # bypass_window doubles as our 'is_admin' signal here since it's set
-    # exactly when an admin is the caller.
+    # Per-project quota. Admins bypass (bypass_window doubles as the admin-is-caller signal
+    # — the caller wires it up as bypass_window=is_admin() at the route level).
     if not bypass_window:
+        nick, proj = get_session_user()  # user is already authenticated via @require_user
+        quotas = s.get("project_quotas") or {}
+        quota = quotas.get(proj, DEFAULT_PROJECT_QUOTA)
         current = list_pods()
-        max_pods = s.get("max_pods", 99)
-        visible_running = sum(1 for p in current
+        project_running = sum(1 for p in current
                               if p.get("desiredStatus") == "RUNNING"
-                              and not p.get("hidden"))
-        if visible_running >= max_pods:
-            raise RuntimeError(f"Достигнут лимит подов: {visible_running}/{max_pods}")
+                              and p.get("assignedProject") == proj
+                              and p.get("countsTowardQuota"))
+        if project_running >= quota:
+            raise RuntimeError(f"Достигнут лимит {proj}: {project_running}/{quota}")
 
     # ===== PRIMARY PATH: GraphQL DeployOnDemand mutation =====
     # This uses the same endpoint as the RunPod web UI and is much more reliable
@@ -1434,17 +1424,37 @@ def api_pods_get():
 def api_pods_post():
     try:
         # Identity comes from session (via @require_user), NOT from request body.
-        # This prevents anonymous pod creation via direct API calls.
         nick, proj = g.current_user
-        pods=list_pods(); name=next_name(pods)
-        # Admins can bypass the pod_window restriction; regular users cannot.
-        result=create_pod(name, bypass_window=is_admin())
-        pid=result.get("id","") if isinstance(result,dict) else ""
+        admin = is_admin()
+        data = request.get_json(silent=True) or {}
+
+        # Admin-only fields. Non-admin bodies are ignored (security: prevent spoofing
+        # a pod into a different project).
+        if admin:
+            ap = data.get("assigned_project")
+            if ap is not None and ap not in PROJECTS:
+                return jsonify({"ok":False,"error":"Unknown project"}), 400
+            cf = bool(data.get("counts_toward_quota", False))
+            src = 'admin'
+        else:
+            ap = proj
+            cf = True
+            src = 'user'
+
+        pods = list_pods()
+        name = next_name(pods)
+        # Admins bypass window + per-project quota; regular users are checked inside create_pod
+        result = create_pod(name, bypass_window=admin)
+        pid = result.get("id", "") if isinstance(result, dict) else ""
         log_action(nick, proj, "create", name, pid)
-        # NOTE: timer is NOT created here. It will be initialized automatically
-        # by list_pods() when ComfyUI's /system_stats first responds successfully.
-        return jsonify({"ok":True,"name":name,"comfyUrl":f"https://{pid}-{PRESET['comfy_port']}.proxy.runpod.net" if pid else None})
-    except Exception as e: return jsonify({"ok":False,"error":str(e)}),500
+        # INSERT pod_assignment so subsequent list_pods() sees this pod in the
+        # right project (and quota/visibility works from the first refresh).
+        if pid:
+            upsert_pod_assignment(pid, ap, cf, src, nick)
+        return jsonify({"ok":True,"name":name,
+                        "comfyUrl":f"https://{pid}-{PRESET['comfy_port']}.proxy.runpod.net" if pid else None})
+    except Exception as e:
+        return jsonify({"ok":False,"error":str(e)}),500
 
 @app.route("/api/pods/<pid>", methods=["DELETE"])
 @require_user
