@@ -50,7 +50,10 @@ class MigrationTest(unittest.TestCase):
 
     def tearDown(self):
         rm.DB_PATH = self._orig_db_path
-        os.unlink(self.db_path)
+        try:
+            os.unlink(self.db_path)
+        except OSError:
+            pass  # Windows may hold the handle briefly; leave temp file for OS cleanup
 
     def test_migration_creates_pod_assignment_and_drops_pod_hidden(self):
         rm.init_db()  # This triggers migration
@@ -89,6 +92,36 @@ class MigrationTest(unittest.TestCase):
         db = sqlite3.connect(self.db_path)
         count = db.execute("SELECT COUNT(*) FROM pod_assignment").fetchone()[0]
         self.assertEqual(count, 3)  # p1, p2, p_hidden — not duplicated
+        db.close()
+
+    def test_fresh_install_no_pod_hidden(self):
+        """Fresh install path: pod_hidden never existed. Migration must
+        run cleanly, creating pod_assignment and back-filling only from
+        pod_actions.create (if any valid projects are present)."""
+        # Drop legacy pod_hidden to simulate a brand-new install.
+        db = sqlite3.connect(self.db_path)
+        db.execute("DROP TABLE pod_hidden")
+        db.commit()
+        db.close()
+        # Now run init_db — must not crash, must create pod_assignment.
+        rm.init_db()
+        db = sqlite3.connect(self.db_path)
+        db.row_factory = sqlite3.Row
+        # pod_assignment exists
+        cur = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pod_assignment'")
+        self.assertIsNotNone(cur.fetchone())
+        # Only pod_actions.create rows with valid projects make it in.
+        # p1_id (CV), p2_id (DV), p_hidden (ADMIN) are valid — 3 rows.
+        # p3_id (NOTAPROJECT) is invalid — skipped.
+        count = db.execute("SELECT COUNT(*) FROM pod_assignment").fetchone()[0]
+        self.assertEqual(count, 3)
+        # p_hidden now inherits its pod_actions.create → ADMIN project with counts=1
+        # (since there's no pod_hidden row to override it). This is the inverse
+        # of the with-pod_hidden test: proves step 1 is what produced NULL.
+        r = db.execute("SELECT * FROM pod_assignment WHERE pod_id='p_hidden'").fetchone()
+        self.assertEqual(r["assigned_project"], "ADMIN")
+        self.assertEqual(r["counts_toward_quota"], 1)
+        self.assertEqual(r["assigned_by"], "admin_joe")
         db.close()
 
 

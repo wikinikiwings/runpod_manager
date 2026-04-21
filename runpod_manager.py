@@ -292,11 +292,21 @@ def init_db():
 
 def migrate_to_pod_assignment():
     """One-shot migration from pod_hidden → pod_assignment.
+
     Idempotent: if pod_hidden doesn't exist (already migrated), does nothing.
     Also back-fills pod_assignment from pod_actions.create for pods not in pod_hidden.
+
+    Transaction note: this runs on its own connection, separate from the
+    executescript() inside init_db(). If the migration crashes partway, the
+    per-row existence check on next startup skips already-inserted rows, and
+    pod_hidden is only dropped at the very end — so partial failures are
+    recoverable by simply re-running init_db().
     """
     db = sqlite3.connect(str(DB_PATH))
     try:
+        db.execute("BEGIN")
+        now = now_iso()
+
         cur = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pod_hidden'")
         has_hidden = cur.fetchone() is not None
 
@@ -304,7 +314,6 @@ def migrate_to_pod_assignment():
         if has_hidden:
             # Step 1: hidden pods → assigned_project=NULL, counts=0
             rows = db.execute("SELECT pod_id FROM pod_hidden").fetchall()
-            now = now_iso()
             for (pid,) in rows:
                 existing = db.execute("SELECT 1 FROM pod_assignment WHERE pod_id=?", (pid,)).fetchone()
                 if existing:
@@ -316,15 +325,21 @@ def migrate_to_pod_assignment():
 
         # Step 2: back-fill from most-recent pod_actions.create per pod_id
         # (skip pods already in pod_assignment — includes ones just added from pod_hidden)
+        # Explicit subquery join avoids relying on SQLite's non-standard bare-column
+        # GROUP BY semantics for columns not covered by an aggregate.
         creator_count = 0
-        now = now_iso()
         rows = db.execute("""
-            SELECT pod_id, nickname, project, MAX(ts) AS max_ts
-            FROM pod_actions
-            WHERE action='create'
-            GROUP BY pod_id
+            SELECT pa.pod_id, pa.nickname, pa.project
+            FROM pod_actions pa
+            JOIN (
+                SELECT pod_id, MAX(ts) AS max_ts
+                FROM pod_actions
+                WHERE action='create'
+                GROUP BY pod_id
+            ) latest ON latest.pod_id = pa.pod_id AND latest.max_ts = pa.ts
+            WHERE pa.action='create'
         """).fetchall()
-        for pid, nickname, project, _max_ts in rows:
+        for pid, nickname, project in rows:
             existing = db.execute("SELECT 1 FROM pod_assignment WHERE pod_id=?", (pid,)).fetchone()
             if existing:
                 continue
@@ -340,7 +355,7 @@ def migrate_to_pod_assignment():
             db.execute("DROP TABLE pod_hidden")
 
         db.commit()
-        if has_hidden or creator_count > 0:
+        if hidden_count > 0 or creator_count > 0:
             log.info(f"[MIGRATION] pod_assignment populated: {hidden_count} from pod_hidden, {creator_count} from pod_actions")
     except Exception as e:
         db.rollback()
