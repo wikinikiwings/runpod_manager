@@ -2375,8 +2375,8 @@ function getTzLabel(){
   return 'UTC'+sign+h+(m?':'+String(m).padStart(2,'0'):'');
 }
 
-// Format an ISO timestamp as a full local datetime for the activity log.
-// Shows date + time in the viewer's local timezone for precise debugging.
+// Format an ISO timestamp as DD.MM.YYYY HH:MM in the viewer's local timezone.
+// Used by the activity log and the pod tech panel for "last event" / creation stamps.
 function formatLocalFull(ts){
   if(!ts)return'';
   let raw=ts.trim();
@@ -2389,8 +2389,7 @@ function formatLocalFull(ts){
   const dd=String(d.getDate()).padStart(2,'0');
   const hh=String(d.getHours()).padStart(2,'0');
   const mm=String(d.getMinutes()).padStart(2,'0');
-  const ss=String(d.getSeconds()).padStart(2,'0');
-  return yyyy+'-'+mo+'-'+dd+' '+hh+':'+mm+':'+ss;
+  return dd+'.'+mo+'.'+yyyy+' '+hh+':'+mm;
 }
 
 function formatDuration(sec){
