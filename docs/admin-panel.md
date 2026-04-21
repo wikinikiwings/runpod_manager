@@ -115,20 +115,46 @@ do not count toward any quota.
 Kept in `DEFAULT_SETTINGS` for backward compat but **not read**. Replaced
 by per-project quotas in `project_quotas`.
 
-### `auto_delete_*` (runpod_manager.py:1195–1205)
+### `auto_delete_*` + per-project offset
 
-Ежедневное удаление ВСЕХ running-подов в указанное UTC-время.
+Ежедневное удаление running-подов, с возможностью **сдвига** по каждому
+проекту (bypass-на-N-минут).
 
-- `auto_delete_enabled`: bool
-- `auto_delete_time`: `"HH:MM"` UTC
-- `auto_delete_last_run`: `"YYYY-MM-DD"` — сегодняшняя дата после запуска
-  (guard от повторного срабатывания за ту же минуту)
-- `auto_delete_last_log`: текст вида `"[2026-04-06T18:00:01Z] Deleted 3/3"` —
-  показывается в UI чтобы админ видел, что произошло
+**Базовые поля:**
+- `auto_delete_enabled`: bool — глобальный включатель планировщика.
+- `auto_delete_time`: `"HH:MM"` UTC — базовое время удаления.
+- `auto_delete_last_run`: `"YYYY-MM-DD"` — legacy guard, всё ещё пишется
+  для отображения в UI «Last: ...».
+- `auto_delete_last_log`: текст `"[ts] CV: 2/2; DV: 1/1"` — сводная запись
+  что именно сработало в последнем цикле (добавляется в UI).
 
-Работает поверх всех подов, включая hidden. При срабатывании
-логируется в `pod_actions` как `nickname="AUTODELETE"`, `project="[SYSTEM]"`,
-`action="autodelete"`.
+**Per-project offset** (добавлено 2026-04-21):
+- `project_autodelete_offset_minutes`: dict `{"CV":0, "DV":60, ...}` — сдвиг
+  в минутах относительно базового времени. 0 = удалять в базовое время.
+  Range 0-1440 (до 24ч). Валидируется в `api_admin_settings_post`.
+- `project_autodelete_last_run`: dict `{"CV":"2026-04-21", "__unassigned__":"2026-04-21", ...}`
+  — per-project guard от двойного срабатывания в те же UTC-сутки.
+  Заполняется `scheduler_loop` автоматически.
+
+**Как работает планировщик**:
+- `scheduler_loop` тикает каждые 30с. Если `auto_delete_enabled==True`:
+  - Для каждого из 8 PROJECTS: вычисляет эффективное время
+    `(base_total_minutes + offset[proj]) % 1440`. Если `now.hour == eff_h` и
+    `now.minute == eff_m` и `last_run[proj] != today`, вызывает
+    `delete_project_pods(proj)` и обновляет `last_run[proj] = today`.
+  - Для unassigned-бакета (поды с `assigned_project IS NULL`): эффективное
+    время всегда базовое (offset не применяется). Ключ guard-а —
+    `"__unassigned__"`.
+- Кнопка **«Delete all now»** в UI по-прежнему дёргает `delete_all_pods`
+  который бьёт всех running подов одним заходом (не учитывает offset).
+
+**Примеры**:
+- Base `21:00` UTC, CV offset `60`, DV offset `0` → CV удаляется в 22:00,
+  DV в 21:00, unassigned в 21:00.
+- Base `22:00`, MW offset `200` → MW удаляется в 01:20 следующих суток.
+
+Каждое фактическое удаление пода логируется в `pod_actions` как
+`nickname="AUTODELETE"`, `project="[SYSTEM]"`, `action="autodelete"`.
 
 ### `idle_timeout_*` (runpod_manager.py:1164–1187)
 
@@ -177,6 +203,13 @@ by per-project quotas in `project_quotas`.
 - **Quota enforcement**: when creating a new pod, count the number of RUNNING
   pods in the user's project where `counts_toward_quota=1`. If >= quota, reject.
   Admin-created pods bypass this check.
+- **Pod naming** (added 2026-04-21): каждый проект имеет свой namespace для
+  имён. User/admin создаёт под в CV → `cv_pod_1`, `cv_pod_2`, ... Unassigned
+  админ-поды получают legacy-префикс `pod_N`. Счётчик per-prefix: в каждом
+  проекте нумерация начинается с 1 и не конфликтует с другими проектами.
+  Реализовано в `pod_name_prefix(project)` + `next_name(pods, project)` в
+  `runpod_manager.py`. Старые поды с глобальным `pod_N` именем остаются как
+  есть (переименования не делается).
 
 Хранится в таблице `pod_assignment` (pod_id, assigned_project, counts_toward_quota,
 creation_source, assigned_at, assigned_by). Подробности в [database.md](database.md).

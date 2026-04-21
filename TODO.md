@@ -159,6 +159,22 @@ ComfyUI которое мы не чиним, только отлавливаем
 
 ## Журнал предыдущих TODO/решений
 
+### ✅ DONE: Per-project auto-delete offset (2026-04-21, post-ship)
+Админ теперь задаёт per-project offset в минутах относительно
+`auto_delete_time`. Эффективное время для каждого проекта =
+`(base + offset) % 1440`. Сетка полей в секции Auto-delete, hint рядом
+с каждым инпутом показывает расчитанное эффективное время. Защита от
+двойного срабатывания per-project (`project_autodelete_last_run`).
+Unassigned-поды всегда удаляются в базовое время. «Delete all now»
+остался глобальным. Коммит `44590f2`.
+
+### ✅ DONE: Per-project pod naming (2026-04-21, post-ship)
+Имена подов теперь per-project namespace: `cv_pod_N`, `dv_pod_N`,
+`admin_pod_N`, ..., unassigned → `pod_N` (legacy префикс). Счётчик
+per-prefix, изолированный между проектами. Старые глобальные `pod_N`
+поды не переименовываются. Реализация — `pod_name_prefix(project)`
+и `next_name(pods, project=None)` в runpod_manager.py. Коммит `9c8e3bd`.
+
 ### ✅ DONE: Per-project quotas (2026-04-21)
 Заменили глобальный `max_pods` на квоту на каждый проект (дефолт 4). Юзер видит
 только поды своего проекта; админ видит всё и может назначать/переназначать любой
