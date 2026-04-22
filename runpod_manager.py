@@ -1880,7 +1880,7 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
   <h3>RunPod Manager</h3>
   <p style="color:var(--t2);font-size:13px">Enter your name and select your project</p>
   <div class="fr"><label>Nickname</label><input type="text" id="loginNick" maxlength="30" placeholder="Your name" onkeydown="if(event.key==='Enter')doUserLogin()"></div>
-  <div class="fr"><label>Project</label><select id="loginProj"></select></div>
+  <div class="fr"><label>Project</label><select id="loginProj"><option value="" disabled selected>— Выберите проект —</option></select></div>
   <div class="da"><button class="btn bp" onclick="doUserLogin()">Enter</button></div>
 </div></div>
 
