@@ -4,7 +4,7 @@
 
 **Goal:** Убрать автоматический выбор проекта `CV` на экране регистрации — вместо него показывать disabled-плейсхолдер "— Выберите проект —" и валидировать выбор перед отправкой, чтобы невнимательный юзер не попадал в чужой проект.
 
-**Architecture:** Два текстовых изменения в `runpod_manager.py`: HTML-плейсхолдер в `<select id="loginProj">` и client-side гард в `doUserLogin()`. Серверная валидация (`validate_registration_input`, строка 726) уже отклоняет пустой/некорректный проект — добавим unit-тест, который это фиксирует.
+**Architecture:** Два текстовых изменения в `runpod_manager.py`: HTML-плейсхолдер в `<select id="loginProj">` и client-side гард в `doUserLogin()`. Серверная валидация (`validate_user_input`, строка 709) уже отклоняет пустой/некорректный проект — добавим unit-тест, который это фиксирует.
 
 **Tech Stack:** Python 3 (Flask single-file app), vanilla JS, unittest.
 
@@ -27,10 +27,10 @@
 **Files:**
 - Create: `tests/test_user_validation.py`
 
-- [ ] **Step 1: Создать тест-файл с падающими тестами**
+- [ ] **Step 1: Создать тест-файл**
 
 ```python
-"""Tests for runpod_manager.validate_registration_input.
+"""Tests for runpod_manager.validate_user_input.
 Run: python -m unittest tests.test_user_validation
 """
 import sys
@@ -46,39 +46,39 @@ class UserValidationTest(unittest.TestCase):
     def test_empty_project_is_rejected(self):
         """Empty string project must raise — defends against client bypass."""
         with self.assertRaises(rm.UserValidationError):
-            rm.validate_registration_input("alice", "")
+            rm.validate_user_input("alice", "")
 
     def test_unknown_project_is_rejected(self):
         """Project not in PROJECTS whitelist must raise."""
         with self.assertRaises(rm.UserValidationError):
-            rm.validate_registration_input("alice", "FAKEPROJECT")
+            rm.validate_user_input("alice", "FAKEPROJECT")
 
     def test_none_project_is_rejected(self):
         """None project must raise (isinstance check)."""
         with self.assertRaises(rm.UserValidationError):
-            rm.validate_registration_input("alice", None)
+            rm.validate_user_input("alice", None)
 
     def test_valid_project_passes(self):
         """A project from PROJECTS must pass and return normalized values."""
-        nick, proj = rm.validate_registration_input("alice", "CV")
+        nick, proj = rm.validate_user_input("alice", "CV")
         self.assertEqual(proj, "CV")
         self.assertTrue(nick)  # nickname non-empty after normalization
 
     def test_empty_nickname_is_rejected(self):
         """Empty nickname must raise regardless of valid project."""
         with self.assertRaises(rm.UserValidationError):
-            rm.validate_registration_input("", "CV")
+            rm.validate_user_input("", "CV")
 
 
 if __name__ == "__main__":
     unittest.main()
 ```
 
-- [ ] **Step 2: Запустить тест — убедиться, что все 5 тестов ПРОХОДЯТ сразу**
+- [ ] **Step 2: Запустить тест — убедиться, что все 5 тестов проходят**
 
 Run: `python -m unittest tests.test_user_validation -v`
 
-Expected: 5 tests, all PASS. Тест проверяет уже существующее поведение `validate_registration_input` (`runpod_manager.py:706-729`), поэтому фейлов быть не должно. Если хоть один тест фейлится — это означает, что серверная защита сломана, и нужно ЧИНИТЬ сервер, а не тест.
+Expected: 5 tests, all PASS. Тест проверяет уже существующее поведение `validate_user_input` (`runpod_manager.py:705-728`), поэтому фейлов быть не должно. Если хоть один тест фейлится — это означает, что серверная защита сломана, и нужно ЧИНИТЬ сервер, а не тест.
 
 Примечание по TDD: обычно сначала пишем красный тест. Здесь мы фиксируем существующее поведение (regression lock) — новой логики на сервере не добавляем, защиту расширяет только фронт. Если в ходе ревью решим добавить явный `if proj == "":` — тест уже будет на месте.
 
