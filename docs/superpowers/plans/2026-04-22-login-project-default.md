@@ -216,7 +216,7 @@ python runpod_manager.py
 fetch('/api/user/register',{method:'POST',headers:{'Content-Type':'application/json'},body:'{"nickname":"hacker","project":""}'}).then(r=>console.log(r.status))
 ```
 
-Ожидаемо: статус `403` (серверная валидация отклоняет). Это — подтверждение, что сервер защищён и без фронта.
+Ожидаемо: статус `400` (серверная валидация отклоняет с `{"ok":false,"error":"Invalid or missing project"}`). Это — подтверждение, что сервер защищён и без фронта.
 
 - [ ] **Step 6: Тест "повторный логин после logout"**
 

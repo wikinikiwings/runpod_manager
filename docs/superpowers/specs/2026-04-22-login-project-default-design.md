@@ -53,7 +53,7 @@ if not isinstance(proj, str) or proj not in PROJECTS:
 | Вектор | Защита |
 |---|---|
 | Юзер жмёт Enter не выбрав проект | Client-side тост "Выберите проект" |
-| Юзер шлёт `POST /api/user/register {project:""}` через DevTools | Server-side `UserValidationError` → 403 |
+| Юзер шлёт `POST /api/user/register {project:""}` через DevTools | Server-side `UserValidationError` → 400 |
 | Юзер шлёт `project:"FAKE"` | То же самое — `proj not in PROJECTS` |
 | Browser autofill/cached session | localStorage хранит только nickname (строка 2016), project не восстанавливается из кэша на логин-экране |
 | Юзер уже залогинен | `refreshSession()` скрывает `#loginScreen` до того, как мы дойдём до селекта — наш плейсхолдер не мешает |
