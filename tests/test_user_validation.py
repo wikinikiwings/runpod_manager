@@ -30,7 +30,7 @@ class UserValidationTest(unittest.TestCase):
         """A project from PROJECTS must pass and return normalized values."""
         nick, proj = rm.validate_user_input("alice", "CV")
         self.assertEqual(proj, "CV")
-        self.assertTrue(nick)  # nickname non-empty after normalization
+        self.assertEqual(nick, "alice")
 
     def test_empty_nickname_is_rejected(self):
         """Empty nickname must raise regardless of valid project."""
