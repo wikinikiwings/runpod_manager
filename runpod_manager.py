@@ -2023,6 +2023,7 @@ async function initLogin(){
 async function doUserLogin(){
   const n=$('loginNick').value.trim(),p=$('loginProj').value;
   if(!n){toast('Enter a nickname','er');return}
+  if(!p){toast('Выберите проект','er');return}
   try{
     // Server validates and binds identity to session. On success it returns
     // the canonical (clean) nickname and project, which we use locally.
