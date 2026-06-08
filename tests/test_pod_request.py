@@ -71,6 +71,9 @@ class GpuUnavailableDetectTest(unittest.TestCase):
             "specifications. Please refresh and try again."))
         self.assertTrue(rm.is_gpu_unavailable_error("no resources"))
         self.assertTrue(rm.is_gpu_unavailable_error("NO RESOURCES currently"))
+        # Phrase 2 in isolation (would otherwise be masked by phrase 1 overlap).
+        self.assertTrue(rm.is_gpu_unavailable_error(
+            "instances available with the requested gpu type"))
 
     def test_rejects_other_errors(self):
         self.assertFalse(rm.is_gpu_unavailable_error("invalid api key"))
