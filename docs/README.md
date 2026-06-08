@@ -61,8 +61,9 @@ cleartext; меняется через UI в admin-панели).
 
 ## Критичные внешние зависимости
 
-- **RunPod аккаунт** — привязан к `RUNPOD_API_KEY` в `.env`. Ключ лежит
-  `C:\Users\admin_korneev\.runpod` (см. локальную заметку).
+- **RunPod аккаунт** — привязан к `RUNPOD_API_KEY` в `.env`. Запасной источник
+  ключа — `~/.runpod/config.toml` в домашней папке пользователя на хосте (если
+  логинились через `runpodctl`).
 - **Network volume** `0czgom7b1j` в дата-центре `EU-RO-1` — смонтирован в
   `/workspace` каждого пода. Если удалить — поды не смогут стартовать.
 - **RunPod template** `i3j2sm66q8` с образом `wikiniki/comfy_runpod:latest`.

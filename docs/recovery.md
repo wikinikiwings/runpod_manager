@@ -82,9 +82,9 @@ docker compose exec runpod-manager python3 /app/test_graphql.py
 
 На хосте (если когда-то логинились через CLI):
 ```
-type "C:\Users\admin_korneev\.runpod\config.toml"
+type "%USERPROFILE%\.runpod\config.toml"
 ```
-Там поле `api_key = "..."`. См. локальную заметку `где хранится ключ.txt`.
+Там поле `api_key = "..."`.
 
 ---
 
