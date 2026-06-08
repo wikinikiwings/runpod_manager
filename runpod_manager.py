@@ -1737,6 +1737,52 @@ def api_pods_post():
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
+@app.route("/api/pod-requests", methods=["POST"])
+@require_user
+def api_pod_requests_post():
+    """Create an auto-retry pod request ('заявка'). Reserves a quota slot now;
+    a background worker (pod_request_loop) retries the deploy until success or
+    the admin-configured timeout."""
+    try:
+        nick, proj = g.current_user
+        admin = is_admin()
+        data = request.get_json(silent=True) or {}
+
+        # Admin-only fields, mirroring api_pods_post.
+        if admin:
+            ap = data.get("assigned_project")
+            if ap is not None and ap not in PROJECTS:
+                return jsonify({"ok": False, "error": "Unknown project"}), 400
+            cf = bool(data.get("counts_toward_quota", False))
+            src = 'admin'
+        else:
+            ap = proj
+            cf = True
+            src = 'user'
+
+        # Window + quota are enforced once, at request-creation time (admins bypass).
+        if not admin:
+            w = check_pod_window()
+            if not w["is_open"]:
+                return jsonify({"ok": False,
+                                "error": f"Запуск подов ограничен. Снова будет доступен в {w['until']} UTC."}), 400
+            quotas = get_settings().get("project_quotas") or {}
+            quota = quotas.get(ap, DEFAULT_PROJECT_QUOTA)
+            used = project_quota_usage(ap)
+            if used >= quota:
+                return jsonify({"ok": False,
+                                "error": f"Достигнут лимит {ap}: {used}/{quota}"}), 400
+
+        pods = list_pods()
+        reserved = pods + [{"name": n} for n in pending_request_names()]
+        name = next_name(reserved, ap)
+        rid = create_pod_request(name, ap, cf, src, nick)
+        log_action(nick, proj, "request", name, "")
+        return jsonify({"ok": True, "request": {
+            "id": rid, "name": name, "status": "pending", "assignedProject": ap}})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/pods/<pid>", methods=["DELETE"])
 @require_user
 def api_del(pid):

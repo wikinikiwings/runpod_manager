@@ -141,6 +141,29 @@ class ApiPodsPostSignalTest(unittest.TestCase):
         self.assertFalse(body["ok"])
         self.assertTrue(body["gpuUnavailable"])
 
+    def test_create_request_inserts_pending_row(self):
+        self._login()
+        with mock.patch.object(rm, "list_pods", return_value=[]):
+            r = self.client.post("/api/pod-requests", json={})
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(body["request"]["name"], "cv_pod_1")
+        pend = rm.list_pending_requests()
+        self.assertEqual(len(pend), 1)
+        self.assertEqual(pend[0]["assigned_project"], "CV")
+        self.assertEqual(pend[0]["requested_by"], "alice")
+
+    def test_create_request_rejected_when_quota_full(self):
+        self._login()
+        running = [{"desiredStatus": "RUNNING", "assignedProject": "CV", "countsTowardQuota": True}] * 4
+        with mock.patch.object(rm, "list_pods", return_value=running):
+            # default CV quota is 4 → already full
+            r = self.client.post("/api/pod-requests", json={})
+        self.assertEqual(r.status_code, 400)
+        self.assertFalse(r.get_json()["ok"])
+        self.assertEqual(rm.list_pending_requests(), [])
+
 
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):
