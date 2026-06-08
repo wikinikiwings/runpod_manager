@@ -90,7 +90,7 @@ export RUNPOD_API_KEY=rpa_...                     # bash
 python runpod_manager.py --port 5001
 ```
 
-## Откуда читается API key (`resolve_api_key`, runpod_manager.py:635–645)
+## Откуда читается API key (`resolve_api_key`)
 
 Порядок приоритета (первое найденное побеждает):
 
@@ -132,7 +132,7 @@ healthcheck:
 
 ## Reverse proxy (Caddy/Nginx)
 
-Комментарий в коде (runpod_manager.py:1232–1241) упоминает, что deployment
+Комментарий в коде упоминает, что deployment
 может быть за reverse proxy с basic auth. Поэтому используется **403, а не 401**
 для unauthenticated пользователя, чтобы proxy не перехватывал редирект и не
 показывал свой login popup.

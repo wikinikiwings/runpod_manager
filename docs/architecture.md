@@ -1,6 +1,6 @@
 # Архитектура `runpod_manager.py`
 
-Файл — Flask-монолит, ~2500 строк, порядок секций (сверху вниз) строгий:
+Файл — Flask-монолит, ~3290 строк, порядок секций (сверху вниз) строгий:
 сначала чистые хелперы без зависимостей, потом слои поверх них, в конце —
 routes, inline frontend и `main`.
 
@@ -8,29 +8,29 @@ routes, inline frontend и `main`.
 
 | Секция | Строки | Что делает |
 |--------|--------|-----------|
-| Imports, globals, `PRESET`, `DEFAULT_SETTINGS` | 1–87 | Константы конфига пода и дефолтных настроек админа |
-| Time helpers | 11–45 | `now_utc()`, `now_iso()`, `parse_iso()` — единый UTC ISO 8601 с суффиксом `Z` для ВСЕХ таймстемпов в БД |
-| ComfyUI service health (порт 8188) | 89–131 | `check_pod_service()` → `/system_stats`, TTL 15s, параллельно через `ThreadPoolExecutor(8)` |
-| Boot status (порт 8189) | 133–185 | `check_pod_boot_status()` → `/status.json` (stage/pct/msg/elapsed), TTL 5s |
-| Runtime activity (порт 8189) | 187–245 | `check_pod_runtime_status()` → `/runtime.json` (active/queue/started/completed), TTL 10s |
-| SQLite слой | 247–439 | `init_db()`, `log_action()`, `touch_user()`, `get_pod_creators()`, pod_timers (init/touch/delete/get_all), pod_assignment (upsert/get/get_batch/delete/determine_source), `migrate_to_pod_assignment()` |
-| Settings | 441–456 | `load_settings()` / `save_settings()` под `_settings_lock`, auto-backfill недостающих ключей из `DEFAULT_SETTINGS` |
-| Pod creation window | ~458–550 | `check_pod_window()` — логика запретного окна создания подов (strategy A) |
-| User validation + session | 560–630 | `validate_user_input()`, `get_session_user()`, декораторы `@require_user`, `@require_admin`, `is_admin()` |
-| API key + HTTP/CLI utils | 635–725 | `resolve_api_key()` (CLI → env → `~/.runpod/config.toml`), `http_request()`, `detect_cli()`, `run_cmd()`, `humanize_cli_error()` |
-| Pod listing (multi-fallback) | 730–925 | `list_pods()` + `try_gql_bearer()` / `try_gql_qp()` / `try_rest()` / `try_cli()`, обогащение каждого пода (health, boot, runtime, timers, hidden, creator) |
-| **GraphQL deploy** | 927–1038 | `DEPLOY_MUTATION` + `create_pod_via_graphql()` — primary path создания пода |
-| Pod operations | 1040–1188 | `create_pod()` (GraphQL → CLI fallback), `delete_pod()`, `start_pod()`, `next_name()`, `delete_all_pods()`, `check_idle_timeouts()` |
-| Scheduler | 1189–1209 | `scheduler_loop()` — daemon-тред, tick раз в 30s: daily auto-delete + idle timeout |
-| Авторетрай заявок | — | `process_pending_requests()` (один тик) + `pod_request_loop()` — второй daemon-тред, ретраит pending-заявки из таблицы `pod_request` каждые `pod_request_retry_interval_seconds`. CRUD-хелперы заявок + `GpuUnavailableError`/`is_gpu_unavailable_error`. См. `docs/graphql-deploy.md` |
-| API routes | 1212–1454 | `/api/projects`, `/api/user/*`, `/api/pods`, `/api/admin/*` |
-| Inline HTML SPA | 1459–2480 | `FRONTEND_HTML` — вся вёрстка, стили, JS в одной строке (~1000 строк) |
-| Root + favicon | 2483–2491 | `/` возвращает `FRONTEND_HTML`, `/favicon.ico` → 204 |
-| `main` | 2493–2512 | argparse, logging, `detect_cli()`, `init_db()`, старт scheduler-треда + `pod_request_loop`-треда, `app.run()` |
+| Imports | 1–10 | stdlib + flask, без внешних зависимостей |
+| Time helpers + globals | 12–103 | `now_utc()`/`now_iso()`/`parse_iso()` (UTC ISO 8601 `Z`), затем `PRESET`, `PROJECTS`, пути, `DEFAULT_SETTINGS` |
+| ComfyUI service health (порт 8188) | 104–147 | `check_pod_service()` → `/system_stats`, TTL 15s, параллельно через `ThreadPoolExecutor(8)` |
+| Boot status (порт 8189) | 148–201 | `check_pod_boot_status()` → `/status.json` (stage/pct/msg/elapsed), TTL 5s |
+| Runtime activity (порт 8189) | 202–261 | `check_pod_runtime_status()` → `/runtime.json` (active/queue/started/completed), TTL 10s |
+| SQLite слой | 262–728 | `init_db()`, `log_action()`, `touch_user()`, `get_pod_creators()`, pod_timers (init/touch/delete/get_all), pod_assignment (upsert/get/get_batch/delete/determine_source), `migrate_to_pod_assignment()`, pod_request CRUD (`create_pod_request` и др.) |
+| Settings | 729–745 | `load_settings()` / `save_settings()` под `_settings_lock`, auto-backfill недостающих ключей из `DEFAULT_SETTINGS` |
+| Pod creation window | 746–846 | `check_pod_window()` — логика запретного окна создания подов (strategy A) |
+| User validation + session | 847–917 | `validate_user_input()`, `get_session_user()`, декораторы `@require_user`, `@require_admin`, `is_admin()` |
+| HTTP / CLI utils | 918–1012 | `resolve_api_key()` (CLI → env → `~/.runpod/config.toml`), `http_request()`, `detect_cli()`, `run_cmd()`, `humanize_cli_error()` |
+| Pod listing (multi-fallback) | 1013–1222 | `list_pods()` + `try_gql_bearer()` / `try_gql_qp()` / `try_rest()` / `try_cli()`, обогащение каждого пода (health, boot, runtime, timers, assignment, creator) |
+| **GraphQL deploy** | 1223–1359 | `DEPLOY_MUTATION` + `create_pod_via_graphql()` — primary path создания пода; `GpuUnavailableError` / `is_gpu_unavailable_error` (retryable-условие для авторетрая) |
+| Pod operations | 1360–1594 | `create_pod()` (GraphQL → CLI fallback), `delete_pod()`, `start_pod()`, `next_name()`, `delete_all_pods()`, `check_idle_timeouts()`, `process_pending_requests()` (тик авторетрая) |
+| Scheduler + воркеры | 1595–1663 | `scheduler_loop()` (daily auto-delete + idle timeout, tick 30s) и `pod_request_loop()` (авторетрай заявок, tick `pod_request_retry_interval_seconds`) — два daemon-треда |
+| API routes | 1664–2076 | `/api/projects`, `/api/user/*`, `/api/pods`, `/api/pod-requests`, `/api/admin/*` |
+| Inline HTML SPA | 2077–3262 | `FRONTEND_HTML` — вся вёрстка, стили, JS в одной строке; в конце `/` и `/favicon.ico` → 204 |
+| `main` | 3264–3285 | argparse, logging, `detect_cli()`, `init_db()`, старт scheduler-треда + `pod_request_loop`-треда, `app.run()` |
+
+> Авторетрай заявок («заявка на под») — кросс-секционная фича: CRUD-хелперы в SQLite-слое, `GpuUnavailableError` в GraphQL deploy, `process_pending_requests()` в Pod operations, `pod_request_loop()` в Scheduler. Полное описание — `docs/graphql-deploy.md`.
 
 ## Глобальные константы
 
-### `PRESET` (runpod_manager.py:47–66)
+### `PRESET` (runpod_manager.py:48–67)
 
 Базовый конфиг пода. Используется и GraphQL-путём, и CLI-fallback-ом.
 
@@ -57,7 +57,7 @@ PRESET = {
 `data_center_id` **заблокирован** локацией `network_volume_id` — если меняете
 volume, меняйте и DC.
 
-### `PROJECTS` (runpod_manager.py:67)
+### `PROJECTS` (runpod_manager.py:68)
 
 Whitelist проектов для регистрации пользователей:
 ```python
@@ -66,25 +66,30 @@ PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
 
 При регистрации `validate_user_input()` отбрасывает всё, чего нет в этом списке.
 
-### `DEFAULT_SETTINGS` (runpod_manager.py:78–87)
+### `DEFAULT_SETTINGS` (runpod_manager.py:80–103)
 
 Значения, которыми бэкфиллится `admin_settings.json` если каких-то ключей нет:
 
 | Ключ | Дефолт | Назначение |
 |------|--------|-----------|
 | `admin_password` | `"admin"` | Cleartext (!), сравнивается напрямую в `/api/admin/login` |
-| `max_pods` | `5` | Лимит одновременно видимых RUNNING-подов для не-админа |
+| `max_pods` | `5` | Legacy-лимит (deprecated; квоты теперь per-project) |
+| `project_quotas` | `{p: DEFAULT_PROJECT_QUOTA}` | Лимит одновременных подов на каждый проект |
 | `auto_delete_enabled` | `False` | Ежедневное авто-удаление всех подов в указанное UTC-время |
 | `auto_delete_time` | `"21:00"` | UTC `HH:MM` |
 | `auto_delete_last_run` / `auto_delete_last_log` | `""` | Guard против двойного срабатывания в одни сутки + текст результата для UI |
+| `project_autodelete_offset_minutes` | `{p: 0}` | Per-project сдвиг времени авто-удаления (мин), 0..1440 |
+| `project_autodelete_last_run` | `{}` | Per-project guard даты последнего срабатывания |
 | `idle_timeout_enabled` | `True` | Удалять поды простоявшие > N минут |
 | `idle_timeout_minutes` | `120` | Порог простоя в минутах |
+| `pod_request_timeout_minutes` | `15` | Авторетрай: общее окно удержания заявки (мин), 1..1440 |
+| `pod_request_retry_interval_seconds` | `15` | Авторетрай: пауза между попытками деплоя (сек), 5..600 |
 | `pod_window_enabled` | `False` | Окно запрета создания подов |
 | `pod_window_from` / `pod_window_until` | `"22:00"` / `"08:00"` | UTC `HH:MM`, период запрета (overnight поддерживается) |
 
 ## Кэши и их TTL
 
-Все three TTL-кэша живут в процессе памяти (при рестарте пересоздаются).
+Все три TTL-кэша живут в процессе памяти (при рестарте пересоздаются).
 Каждый защищён своим `threading.Lock()`.
 
 | Кэш | TTL | Источник | Очищается в |
@@ -106,7 +111,7 @@ PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
 
 ## Главная точка входа
 
-`runpod_manager.py:2493–2512`:
+`runpod_manager.py:3264–3285`:
 
 1. `argparse` парсит `--host`, `--port`, `--api-key`, `--debug`.
 2. Настраивает логгер.

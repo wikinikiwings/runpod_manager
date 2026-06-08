@@ -1,6 +1,6 @@
 # RunPod Manager — документация (as-is)
 
-Снимок проекта на момент `2026-04-21`, версия `v6.4`.
+Снимок проекта на момент `2026-06-08`, версия `v6.6`.
 Цель этой папки — дать достаточно контекста, чтобы восстановить и починить
 проект с нуля, даже если потерян код, БД или настройки.
 
@@ -11,13 +11,13 @@
 - Пользователи регистрируются (ник + проект из whitelist), запускают и удаляют
   свои ComfyUI-поды.
 - Админ управляет всеми подами, настройками авто-удаления, окнами запуска и
-  скрывает поды от обычных пользователей.
+  назначает поды проектам (юзер видит только поды своего проекта).
 - Запуск подов идёт через **GraphQL-мутацию `DeployOnDemand`** — ту же, что
   использует веб-UI RunPod (потому что `runpodctl` ломается на новых GPU вроде
   Blackwell RTX PRO 4500).
 - Если все видеокарты заняты — пользователь оставляет **заявку на под**, и
   фоновый воркер сам повторяет запуск, пока карта не освободится (авторетрай).
-- Один файл — `runpod_manager.py` (~2500 строк), одна БД — `runpod_manager.db`
+- Один файл — `runpod_manager.py` (~3290 строк), одна БД — `runpod_manager.db`
   (SQLite), одни настройки — `admin_settings.json`.
 
 ## Структура репозитория
@@ -43,7 +43,7 @@ runpod_manager/
 | [architecture.md](architecture.md) | Разбивка `runpod_manager.py` по секциям, глобальные константы, `PRESET` |
 | [graphql-deploy.md](graphql-deploy.md) | **Самый важный.** Полная схема `DeployOnDemand`-мутации, переменные, headers, fallback на `runpodctl` |
 | [pod-lifecycle.md](pod-lifecycle.md) | Create → boot (порт 8189) → ready (порт 8188) → idle → delete, все health-check endpoints |
-| [admin-panel.md](admin-panel.md) | Аутентификация (user + admin), все `/api/admin/*`, настройки, hidden pods, pod window, scheduler |
+| [admin-panel.md](admin-panel.md) | Аутентификация (user + admin), все `/api/admin/*`, настройки, per-project quotas, pod window, scheduler |
 | [database.md](database.md) | DDL всех 5 таблиц SQLite, где каждая пишется/читается |
 | [deployment.md](deployment.md) | Запуск через `docker compose`, env vars, volumes, откуда читается API key |
 | [recovery.md](recovery.md) | Плейбук на случай поломки: потерял БД / ключ / настройки / не стартует / списывает деньги |
@@ -72,6 +72,6 @@ cleartext; меняется через UI в admin-панели).
 - **`runpodctl` CLI** — скачивается в Dockerfile при билде, используется только
   для `pod delete` / `pod start` и как fallback для `pod create`.
 
-Все эти значения зафиксированы в `PRESET` в `runpod_manager.py:47-66`. При
+Все эти значения зафиксированы в `PRESET` в `runpod_manager.py` (секция globals). При
 смене RunPod-аккаунта нужно править `PRESET` или подтянуть значения нового
 аккаунта.

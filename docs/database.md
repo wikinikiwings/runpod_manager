@@ -3,9 +3,12 @@
 Путь: `runpod_manager.db` в `DATA_DIR` (в Docker — `/app/data/runpod_manager.db`
 в именованном volume `runpod-data`, выживает рестарты контейнера).
 
-Создаётся при старте в `init_db()` (runpod_manager.py:260–286) через
-`CREATE TABLE IF NOT EXISTS`. Миграций нет, схема не менялась — если понадобится
-добавить колонку, придётся писать ALTER TABLE руками.
+Создаётся при старте в `init_db()` через `CREATE TABLE IF NOT EXISTS`. Схема
+наращивается только добавлением новых таблиц (`CREATE TABLE IF NOT EXISTS`
+идемпотентен) — `ALTER TABLE` для существующих таблиц нигде не используется.
+Единственная настоящая миграция данных — one-shot `pod_hidden → pod_assignment`
+внутри `init_db()` (см. раздел ниже); она идемпотентна и больше не срабатывает
+после первого прогона.
 
 Все таймстемпы — **UTC ISO 8601 с суффиксом `Z`**, например
 `2026-04-07T12:34:56Z`. Пишутся либо через `now_iso()` из Python, либо
@@ -77,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
 - `last_seen` — обновляется при каждом `POST /api/user/register` (что бывает и
   при повторном логине после `/logout`, не только при первой регистрации).
 
-**Пишется**: `touch_user()` (runpod_manager.py:296–303) из
+**Пишется**: `touch_user()` из
 `/api/user/register`.
 
 **Читается**: нигде в текущей версии кода кроме как для admin-обзора (можно
@@ -102,7 +105,7 @@ CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
 - `idx_pa_pod` по `(pod_id, action)` — для `get_pod_creators()` (найти
   запись с `action='create'` для списка pod IDs одним запросом).
 
-**Пишется**: `log_action()` (runpod_manager.py:288–294) из:
+**Пишется**: `log_action()` из:
 - `/api/pods` POST (create)
 - `/api/pods/<id>` DELETE (delete)
 - `/api/pods/<id>/start` POST (start)
@@ -131,10 +134,9 @@ CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
 - Если пользователь никогда не запускал нагрузку, `last_active` остаётся
   равным `created_at` → `idleSeconds` растёт с момента ready.
 
-**Пишется**: `timer_init_if_missing()`, `timer_touch()`, `timer_delete()`
-(runpod_manager.py:329–358).
+**Пишется**: `timer_init_if_missing()`, `timer_touch()`, `timer_delete()`.
 
-**Читается**: `timer_get_all()` (runpod_manager.py:360–373) — batch запрос
+**Читается**: `timer_get_all()` — batch запрос
 из `list_pods()`.
 
 ### `pod_assignment` — project ownership + admin-only visibility

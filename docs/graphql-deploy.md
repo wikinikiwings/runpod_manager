@@ -6,7 +6,7 @@
 
 ## Почему GraphQL, а не `runpodctl`
 
-Прямая цитата из кода (`runpod_manager.py:927–944`):
+Прямая цитата из кода:
 
 > We discovered through F12 inspection that the RunPod web UI creates pods via
 > a GraphQL mutation `DeployOnDemand` on `https://api.runpod.io/graphql`.
@@ -23,7 +23,7 @@
 `test_deploy.py` в корне репо — их можно запускать для sanity-check:
 `docker compose exec runpod-manager python3 /app/test_deploy.py`).
 
-## Мутация `DEPLOY_MUTATION` (runpod_manager.py:945–951)
+## Мутация `DEPLOY_MUTATION`
 
 ```graphql
 mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
@@ -37,7 +37,7 @@ mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
 
 ## Переменные `input`
 
-Собираются из `PRESET` в `create_pod_via_graphql()` (runpod_manager.py:960–978).
+Собираются из `PRESET` в `create_pod_via_graphql()`.
 **Имена полей — camelCase**, строго как ждёт GraphQL-схема RunPod:
 
 | Поле GraphQL | Источник в PRESET | Текущее значение |
@@ -64,7 +64,7 @@ mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
 
 ## Запрос целиком
 
-`URL` (runpod_manager.py:989):
+`URL`:
 ```
 POST https://api.runpod.io/graphql?operation=DeployOnDemand
 ```
@@ -72,7 +72,7 @@ POST https://api.runpod.io/graphql?operation=DeployOnDemand
 Query-параметр `?operation=DeployOnDemand` — зеркалит UI-запрос. Не обязателен
 по GraphQL-спеке, но edge-роутер RunPod может его использовать.
 
-`Headers` (runpod_manager.py:990–994):
+`Headers`:
 ```
 Content-Type: application/json
 Authorization: Bearer <RUNPOD_API_KEY>
@@ -84,7 +84,7 @@ User-Agent: RunPod-Manager/6.0
 осмысленный UA. Этот же UA используется во всех других GraphQL-вызовах
 (`try_gql_bearer`, listing и т.д.).
 
-`Body` (runpod_manager.py:981–985):
+`Body`:
 ```json
 {
   "operationName": "DeployOnDemand",
@@ -93,31 +93,31 @@ User-Agent: RunPod-Manager/6.0
 }
 ```
 
-`Timeout`: **60 секунд** (runpod_manager.py:1000) — deploy может быть медленным.
+`Timeout`: **60 секунд** — deploy может быть медленным.
 
 ## Обработка ответа
 
-HTTP-ошибки (runpod_manager.py:1002–1012):
+HTTP-ошибки:
 - `HTTPError` → читаем body, кидаем `RuntimeError("GraphQL HTTP <code>: <body>")`
 - `URLError` (сеть) → `RuntimeError("GraphQL network error: ...")`
 - любое другое исключение → `RuntimeError("GraphQL request failed: ...")`
 
 GraphQL-ошибки приходят **внутри тела HTTP 200** (типовой косяк GraphQL).
-Проверка (runpod_manager.py:1019–1027):
+Проверка:
 ```python
 if isinstance(data, dict) and data.get("errors"):
     msgs = [err.get("message", str(err)) for err in data["errors"]]
     raise RuntimeError("GraphQL: " + "; ".join(msgs)[:300])
 ```
 
-Успешный ответ (runpod_manager.py:1029–1038):
+Успешный ответ:
 ```python
 pod = data["data"]["podFindAndDeployOnDemand"]
-# pod = {"id": "...", "imageName": "wikiniki/comfy_runpod:latest", "machineId": "..."}
-return {"id": pod["id"], "name": name, "imageName": ..., "machineId": ...}
+# pod = {"id": "...", "imageName": "wikiniki/comfy_runpod:latest"}
+return {"id": pod["id"], "name": name, "imageName": ...}
 ```
 
-## Fallback на CLI (runpod_manager.py:1081–1118)
+## Fallback на CLI
 
 Если `create_pod_via_graphql()` кинул любое исключение, `create_pod()` логирует
 warning и идёт на CLI:

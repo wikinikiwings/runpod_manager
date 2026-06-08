@@ -64,7 +64,7 @@
 Все три — HTTP GET на `https://{pod_id}-{port}.proxy.runpod.net/...`. RunPod
 автоматически выдаёт HTTPS-прокси для указанных в `ports` портов контейнера.
 
-### `/system_stats` на порту 8188 (runpod_manager.py:97–125)
+### `/system_stats` на порту 8188
 
 Источник: сам ComfyUI. Отвечает JSON-ом вида `{"system": {...}, "devices": [...]}`.
 Мы проверяем `resp.status == 200` и наличие ключа `system` ИЛИ `devices` в JSON.
@@ -75,7 +75,7 @@
 - Кэш: `_service_cache` под `_service_cache_lock`
 - Параллельный fetch: `check_pods_services_parallel()` через `ThreadPoolExecutor(8)`
 
-### `/status.json` на порту 8189 (runpod_manager.py:142–185)
+### `/status.json` на порту 8189
 
 Источник: **не** ComfyUI, а отдельный python HTTP-сервер из `start.sh`
 (запускается первым и живёт всё время работы контейнера). Отвечает:
@@ -90,7 +90,7 @@
 - Timeout: `BOOT_CHECK_TIMEOUT = 4s`
 - TTL кэша: `BOOT_CHECK_TTL = 5s` (короткий, чтобы прогресс-бар был живой)
 
-### `/runtime.json` на порту 8189 (runpod_manager.py:197–238)
+### `/runtime.json` на порту 8189
 
 Источник: тот же HTTP-сервер из `start.sh`, только **watcher** скрипта tail-ит
 лог ComfyUI и инкрементит счётчики по событиям:
@@ -120,7 +120,7 @@
 timer не стартует → деньги текут. Фикс планируется в `start.sh` (не в
 менеджере), детали в `TODO.md`.
 
-## `list_pods()` — сборка полной картины (runpod_manager.py:730–925)
+## `list_pods()` — сборка полной картины
 
 Единая функция, которую зовёт UI при каждом refresh (каждые 15 секунд):
 
@@ -144,7 +144,8 @@ timer не стартует → деньги текут. Фикс планиру
      `None`
 6. `get_pod_creators(all_ids)` — одним запросом SELECT из pod_actions
    WHERE action='create' → nickname/project/timestamp создателя (для UI)
-7. `get_hidden_ids()` — set подов, помеченных как hidden
+7. `get_assignments_batch(all_ids)` — назначения проектов одним запросом
+   (`assigned_project`, `counts_toward_quota`, `creation_source`)
 8. Возвращаем список pod-dict'ов с полями:
    - базовые: `id`, `name`, `desiredStatus`, `imageName`, `gpuId`, `costPerHr`
    - health: `serviceReady`
@@ -152,21 +153,22 @@ timer не стартует → деньги текут. Фикс планиру
    - runtime: `runtime` (dict или null), `isBusy`
    - timer: `idleSeconds`, `createdAt` (когда ComfyUI первый раз стал ready)
    - metadata: `createdBy` ({nickname, project, ts} или null)
-   - visibility: `hidden` (bool)
+   - assignment: `assignedProject` (или null = unassigned, видим только админу),
+     `countsTowardQuota`, `creationSource`
 
-## Удаление пода (`delete_pod()`, runpod_manager.py:1119–1132)
+## Удаление пода (`delete_pod()`)
 
 1. `runpodctl pod delete <id>` (для новой CLI; `remove pod <id>` для старой).
    **Да, удаление всегда идёт через CLI** — GraphQL-удаления в коде нет.
 2. Очистить все три кэша: `_service_cache`, `_boot_cache`, `_runtime_cache`.
 3. `timer_delete(pid)` — удалить из `pod_timers`.
-4. `unhide_pod_id(pid)` — удалить из `pod_hidden` (insurance от повторного
-   использования pod ID).
+4. `delete_pod_assignment(pid)` — удалить строку назначения проекта из
+   `pod_assignment` (no-op, если строки нет).
 
 Запись в `pod_actions` делает вызывающий код (endpoints `/api/pods/<id>` DELETE,
 `check_idle_timeouts`, `delete_all_pods`).
 
-## Перезапуск (`start_pod()`, runpod_manager.py:1133–1142)
+## Перезапуск (`start_pod()`)
 
 Только для подов в статусе `EXITED`. Зовёт `runpodctl pod start <id>`, чистит
 `_boot_cache` и `_runtime_cache` (не `_service_cache` — он сам истечёт через
@@ -175,7 +177,7 @@ timer не стартует → деньги текут. Фикс планиру
 
 ## Авто-удаление по расписанию и idle-timeout
 
-Оба крутятся в `scheduler_loop()` (runpod_manager.py:1192–1209), который
+Оба крутятся в `scheduler_loop()`, который
 запускается как daemon-тред при старте. Tick раз в 30 секунд.
 
 ### Daily auto-delete
@@ -194,9 +196,9 @@ if s.get("auto_delete_enabled") and s.get("auto_delete_time"):
   при сохранении.
 - Guard `auto_delete_last_run != today` предотвращает повторный запуск в те же
   сутки, даже если tick попадёт несколько раз в минуту HH:MM.
-- Работает ВСЕГДА поверх всех подов, включая hidden.
+- Работает ВСЕГДА поверх всех подов, включая неназначенные (видимые только админу).
 
-### Idle timeout (`check_idle_timeouts()`, runpod_manager.py:1164–1187)
+### Idle timeout (`check_idle_timeouts()`)
 
 Вызывается каждый tick (если включено):
 ```python

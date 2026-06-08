@@ -7,14 +7,14 @@
 Эти поля не связаны: можно быть одновременно зарегистрированным юзером и
 админом, можно логиниться админом без регистрации юзером.
 
-## Регистрация пользователя (runpod_manager.py:1217–1230)
+## Регистрация пользователя
 
 ```
 POST /api/user/register
 Body: {"nickname": "vasya", "project": "CV"}
 ```
 
-Валидация (`validate_user_input`, runpod_manager.py:560–597):
+Валидация (`validate_user_input`):
 - Никнейм: 1–30 символов, strip, запрет control chars.
 - Проект: **должен** быть в `PROJECTS = ["CV","DV","MT","PT","MARK","ADMIN","TV","MW"]`.
 
@@ -28,13 +28,12 @@ Body: {"nickname": "vasya", "project": "CV"}
 
 Проверка сессии: `GET /api/user/check` → 200 с `{nickname, project}` или 403.
 Специально **403, а не 401**, чтобы reverse-proxy (Caddy с basic auth) не
-интерпретировал как протухшие креды и не вызывал basic-auth popup
-(runpod_manager.py:1232–1241).
+интерпретировал как протухшие креды и не вызывал basic-auth popup.
 
 Разлогин: `POST /api/user/logout` — чистит только `user_*` ключи из сессии,
 `admin` флаг не трогается.
 
-## Админ-логин (runpod_manager.py:1347–1354)
+## Админ-логин
 
 ```
 POST /api/admin/login
@@ -57,13 +56,13 @@ if data.get("password") == get_settings().get("admin_password", ""):
 
 ## Декораторы
 
-- `@require_user` (runpod_manager.py:609–621) — если нет `user_nickname`, возврат
+- `@require_user` — если нет `user_nickname`, возврат
   403 с `{"ok": false, "error": "Not registered"}`.
-- `@require_admin` (runpod_manager.py:552–558) — если нет `admin=True`, возврат
+- `@require_admin` — если нет `admin=True`, возврат
   401 с `{"ok": false, "error": "Admin only"}`.
-- `is_admin()` (runpod_manager.py:456) — `session.get("admin") == True`,
+- `is_admin()` — `session.get("admin") is True`,
   используется внутри endpoint'ов для conditional логики (например, показывать
-  ли hidden-поды в листинге).
+  ли неназначенные поды в листинге).
 
 ## Таблица admin-endpoints
 
@@ -156,7 +155,7 @@ by per-project quotas in `project_quotas`.
 Каждое фактическое удаление пода логируется в `pod_actions` как
 `nickname="AUTODELETE"`, `project="[SYSTEM]"`, `action="autodelete"`.
 
-### `idle_timeout_*` (runpod_manager.py:1164–1187)
+### `idle_timeout_*`
 
 Удалять поды, которые стояли в idle дольше порога.
 
@@ -170,7 +169,7 @@ by per-project quotas in `project_quotas`.
 Логируется как `nickname="IDLE_TIMEOUT"`, `project="[SYSTEM]"`,
 `action="pod usage timeout auto deleting"`.
 
-### `pod_window_*` (runpod_manager.py:458–550, 1048–1051)
+### `pod_window_*`
 
 Окно запрета создания новых подов (strategy A: только блокирует создание,
 существующие поды работают).
@@ -232,7 +231,7 @@ creation_source, assigned_at, assigned_by). Подробности в [database.
 
 ## Админ-панель (UI)
 
-Находится в `FRONTEND_HTML` (runpod_manager.py:1459–2480). Компоненты:
+Находится в `FRONTEND_HTML`. Компоненты:
 
 - **Login section** — поле пароля → POST `/api/admin/login`
 - **Settings form** — sliders/toggles/inputs для всех описанных выше настроек;

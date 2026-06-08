@@ -138,7 +138,7 @@ docker compose restart runpod-manager
 ### Ошибка говорит «no resources» (особенно для RTX PRO 4500 Blackwell)
 GraphQL отдал `no resources available`. Варианты:
 1. **У RunPod реально нет свободных GPU этого типа в `EU-RO-1`** — подождать,
-   или поменять `gpu_id` / `data_center_id` в `PRESET` (`runpod_manager.py:47-66`).
+   или поменять `gpu_id` / `data_center_id` в `PRESET`.
    Помнить: `data_center_id` связан с `network_volume_id` — нельзя менять
    одно без другого.
 2. **CLI-fallback тоже падает** — это нормальный симптом, GraphQL и CLI
@@ -156,8 +156,8 @@ docker compose exec runpod-manager python3 /tmp/test_deploy.py
 менеджере. Дальше — по [graphql-deploy.md, раздел «Что делать, если мутация перестала работать»](graphql-deploy.md#что-делать-если-мутация-перестала-работать).
 
 ### Ошибка «Cloudflare error code 1010»
-Слетел User-Agent. Убедиться что в `create_pod_via_graphql()` остался
-`"User-Agent": "RunPod-Manager/6.0"` (runpod_manager.py:993).
+Слетел User-Agent. Убедиться что в `create_pod_via_graphql()` остался заголовок
+`"User-Agent": "RunPod-Manager/6.0"`.
 
 ---
 
@@ -174,7 +174,8 @@ docker compose exec runpod-manager python3 /tmp/test_deploy.py
 ### Что потеряно
 - Аудит-лог (`pod_actions`).
 - Idle-timers — пересоздадутся при следующем `list_pods()` когда поды будут ready.
-- Hidden-отметки — все поды стали видимы всем.
+- Назначения проектов (`pod_assignment`) — все поды стали unassigned (видны
+  только админу) и не считаются в квоты, пока их заново не назначить через `/assign`.
 - Настройки админки (лимиты, расписания, пароль) — вернулись к `DEFAULT_SETTINGS`.
 
 ### Восстановление из бэкапа (если был)
@@ -253,7 +254,7 @@ docker compose exec runpod-manager cat /app/data/admin_settings.json | grep auto
 
 ## Сценарий 8 — поменяли RunPod-аккаунт или GPU-тип
 
-Нужно синхронизированно обновить `PRESET` (`runpod_manager.py:47-66`):
+Нужно синхронизированно обновить `PRESET`:
 
 1. `gpu_id` — точное имя GPU-типа (как показывает `runpodctl get cloud` или
    RunPod UI при выборе GPU).
