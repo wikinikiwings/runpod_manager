@@ -55,6 +55,21 @@ class PodRequestDBTest(unittest.TestCase):
         rm.delete_pod_request(last)
         self.assertEqual(rm.list_pending_requests(), [])
 
+    def test_project_quota_usage_counts_running_and_pending(self):
+        fake_pods = [
+            {"desiredStatus": "RUNNING", "assignedProject": "CV", "countsTowardQuota": True},
+            {"desiredStatus": "RUNNING", "assignedProject": "CV", "countsTowardQuota": False},
+            {"desiredStatus": "EXITED",  "assignedProject": "CV", "countsTowardQuota": True},
+            {"desiredStatus": "RUNNING", "assignedProject": "DV", "countsTowardQuota": True},
+        ]
+        # 1 running CV pod counts (the False and EXITED ones don't)
+        self.assertEqual(rm.project_quota_usage("CV", pods=fake_pods), 1)
+        # Add two pending CV requests, one not counting
+        rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        rm.create_pod_request("cv_pod_2", "CV", False, "admin", "admin_joe")
+        self.assertEqual(rm.project_quota_usage("CV", pods=fake_pods), 2)  # 1 running + 1 pending-counting
+        self.assertEqual(rm.project_quota_usage("DV", pods=fake_pods), 1)  # 1 running, 0 pending
+
     def test_pod_request_table_exists(self):
         db = sqlite3.connect(self.db_path)
         cur = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pod_request'")

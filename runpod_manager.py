@@ -709,6 +709,18 @@ def count_pending_quota(project):
         log.error(f"count_pending_quota: {e}")
         return 0
 
+def project_quota_usage(project, pods=None):
+    """Quota slots in use for `project`: RUNNING pods that count toward quota,
+    plus pending requests that count toward quota. `pods` may be passed in to
+    avoid a redundant list_pods() call."""
+    if pods is None:
+        pods = list_pods()
+    running = sum(1 for p in pods
+                  if p.get("desiredStatus") == "RUNNING"
+                  and p.get("assignedProject") == project
+                  and p.get("countsTowardQuota"))
+    return running + count_pending_quota(project)
+
 # ============================================================
 # Settings
 # ============================================================
@@ -1362,13 +1374,11 @@ def create_pod(name, bypass_window=False):
         nick, proj = get_session_user()  # user is already authenticated via @require_user
         quotas = s.get("project_quotas") or {}
         quota = quotas.get(proj, DEFAULT_PROJECT_QUOTA)
-        current = list_pods()
-        project_running = sum(1 for p in current
-                              if p.get("desiredStatus") == "RUNNING"
-                              and p.get("assignedProject") == proj
-                              and p.get("countsTowardQuota"))
-        if project_running >= quota:
-            raise RuntimeError(f"Достигнут лимит {proj}: {project_running}/{quota}")
+        # Usage includes pending requests so a direct create can't exceed quota
+        # while requests are queued.
+        used = project_quota_usage(proj)
+        if used >= quota:
+            raise RuntimeError(f"Достигнут лимит {proj}: {used}/{quota}")
 
     # ===== PRIMARY PATH: GraphQL DeployOnDemand mutation =====
     # This uses the same endpoint as the RunPod web UI and is much more reliable
