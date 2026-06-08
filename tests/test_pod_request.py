@@ -30,6 +30,30 @@ class PodRequestDBTest(unittest.TestCase):
         except OSError:
             pass
 
+    def test_crud_helpers(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        self.assertIsInstance(rid, int)
+        # list_pending_requests returns it
+        pend = rm.list_pending_requests()
+        self.assertEqual(len(pend), 1)
+        self.assertEqual(pend[0]["pod_name"], "cv_pod_1")
+        self.assertEqual(pend[0]["status"], "pending")
+        # get_pod_request
+        row = rm.get_pod_request(rid)
+        self.assertEqual(row["requested_by"], "alice")
+        # update_pod_request
+        rm.update_pod_request(rid, status="fulfilled", pod_id="p_abc")
+        self.assertEqual(rm.get_pod_request(rid)["status"], "fulfilled")
+        # fulfilled no longer pending
+        self.assertEqual(rm.list_pending_requests(), [])
+        # pending_request_names reflects only pending
+        rm.create_pod_request("cv_pod_2", "CV", True, "user", "bob")
+        self.assertEqual(rm.pending_request_names(), ["cv_pod_2"])
+        # delete
+        last = rm.list_pending_requests()[0]["id"]
+        rm.delete_pod_request(last)
+        self.assertEqual(rm.list_pending_requests(), [])
+
     def test_pod_request_table_exists(self):
         db = sqlite3.connect(self.db_path)
         cur = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='pod_request'")

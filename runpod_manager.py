@@ -581,6 +581,113 @@ def determine_creation_source_for_unknown(pid):
         log.error(f"determine_creation_source_for_unknown: {e}")
         return 'external'  # safer fallback
 
+# ----- Pod requests (auto-retry "заявка на под") -----
+
+def create_pod_request(pod_name, assigned_project, counts_toward_quota,
+                       creation_source, requested_by):
+    """Insert a new pending pod_request. Returns the new row id."""
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        cur = db.execute("""INSERT INTO pod_request
+            (pod_name, assigned_project, counts_toward_quota, creation_source,
+             requested_by, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (pod_name, assigned_project, 1 if counts_toward_quota else 0,
+             creation_source, requested_by, now_iso()))
+        db.commit()
+        return cur.lastrowid
+    finally:
+        db.close()
+
+def list_pending_requests():
+    """All pod_request rows with status='pending', oldest first, as dicts."""
+    db = sqlite3.connect(str(DB_PATH))
+    db.row_factory = sqlite3.Row
+    try:
+        rows = db.execute(
+            "SELECT * FROM pod_request WHERE status='pending' ORDER BY created_at"
+        ).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+def list_visible_requests(project=None, viewer_is_admin=False):
+    """Requests to render as cards: statuses pending/timed_out/failed.
+    Admin sees all; a regular user sees only their own project's requests."""
+    db = sqlite3.connect(str(DB_PATH))
+    db.row_factory = sqlite3.Row
+    try:
+        if viewer_is_admin:
+            rows = db.execute(
+                """SELECT * FROM pod_request
+                   WHERE status IN ('pending','timed_out','failed')
+                   ORDER BY created_at"""
+            ).fetchall()
+        else:
+            rows = db.execute(
+                """SELECT * FROM pod_request
+                   WHERE status IN ('pending','timed_out','failed')
+                   AND assigned_project=? ORDER BY created_at""",
+                (project,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        db.close()
+
+def get_pod_request(req_id):
+    """Single pod_request row as dict, or None."""
+    db = sqlite3.connect(str(DB_PATH))
+    db.row_factory = sqlite3.Row
+    try:
+        r = db.execute("SELECT * FROM pod_request WHERE id=?", (req_id,)).fetchone()
+        return dict(r) if r else None
+    finally:
+        db.close()
+
+def update_pod_request(req_id, **fields):
+    """Update the given columns on a pod_request row. No-op if fields empty."""
+    if not fields:
+        return
+    cols = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [req_id]
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        db.execute(f"UPDATE pod_request SET {cols} WHERE id=?", vals)
+        db.commit()
+    finally:
+        db.close()
+
+def delete_pod_request(req_id):
+    """Physically remove a pod_request row (used by 'Закрыть' on terminal cards)."""
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        db.execute("DELETE FROM pod_request WHERE id=?", (req_id,))
+        db.commit()
+    finally:
+        db.close()
+
+def pending_request_names():
+    """Names reserved by pending requests — feed into next_name() so a request
+    and a real pod (or two requests) never collide on a name."""
+    return [r["pod_name"] for r in list_pending_requests()]
+
+def count_pending_quota(project):
+    """Number of pending requests for `project` that count toward its quota."""
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        if project is None:
+            row = db.execute(
+                """SELECT COUNT(*) FROM pod_request
+                   WHERE status='pending' AND counts_toward_quota=1
+                   AND assigned_project IS NULL""").fetchone()
+        else:
+            row = db.execute(
+                """SELECT COUNT(*) FROM pod_request
+                   WHERE status='pending' AND counts_toward_quota=1
+                   AND assigned_project=?""", (project,)).fetchone()
+        return row[0]
+    finally:
+        db.close()
+
 # ============================================================
 # Settings
 # ============================================================
