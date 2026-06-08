@@ -601,52 +601,69 @@ def create_pod_request(pod_name, assigned_project, counts_toward_quota,
 
 def list_pending_requests():
     """All pod_request rows with status='pending', oldest first, as dicts."""
-    db = sqlite3.connect(str(DB_PATH))
-    db.row_factory = sqlite3.Row
     try:
-        rows = db.execute(
-            "SELECT * FROM pod_request WHERE status='pending' ORDER BY created_at"
-        ).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        db.close()
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            rows = db.execute(
+                "SELECT * FROM pod_request WHERE status='pending' ORDER BY created_at"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"list_pending_requests: {e}")
+        return []
 
 def list_visible_requests(project=None, viewer_is_admin=False):
     """Requests to render as cards: statuses pending/timed_out/failed.
     Admin sees all; a regular user sees only their own project's requests."""
-    db = sqlite3.connect(str(DB_PATH))
-    db.row_factory = sqlite3.Row
     try:
-        if viewer_is_admin:
-            rows = db.execute(
-                """SELECT * FROM pod_request
-                   WHERE status IN ('pending','timed_out','failed')
-                   ORDER BY created_at"""
-            ).fetchall()
-        else:
-            rows = db.execute(
-                """SELECT * FROM pod_request
-                   WHERE status IN ('pending','timed_out','failed')
-                   AND assigned_project=? ORDER BY created_at""",
-                (project,)).fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        db.close()
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            if viewer_is_admin:
+                rows = db.execute(
+                    """SELECT * FROM pod_request
+                       WHERE status IN ('pending','timed_out','failed')
+                       ORDER BY created_at"""
+                ).fetchall()
+            else:
+                # Non-admin callers always have a concrete project (require_user
+                # guarantees it); filter to just that project's requests.
+                rows = db.execute(
+                    """SELECT * FROM pod_request
+                       WHERE status IN ('pending','timed_out','failed')
+                       AND assigned_project=? ORDER BY created_at""",
+                    (project,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"list_visible_requests: {e}")
+        return []
 
 def get_pod_request(req_id):
     """Single pod_request row as dict, or None."""
-    db = sqlite3.connect(str(DB_PATH))
-    db.row_factory = sqlite3.Row
     try:
-        r = db.execute("SELECT * FROM pod_request WHERE id=?", (req_id,)).fetchone()
-        return dict(r) if r else None
-    finally:
-        db.close()
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            r = db.execute("SELECT * FROM pod_request WHERE id=?", (req_id,)).fetchone()
+            return dict(r) if r else None
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"get_pod_request: {e}")
+        return None
 
 def update_pod_request(req_id, **fields):
     """Update the given columns on a pod_request row. No-op if fields empty."""
     if not fields:
         return
+    # Column names come from caller-controlled **fields keys (internal call
+    # sites only, never user input) — safe to interpolate. Values are still
+    # passed as bound parameters.
     cols = ", ".join(f"{k}=?" for k in fields)
     vals = list(fields.values()) + [req_id]
     db = sqlite3.connect(str(DB_PATH))
@@ -672,21 +689,25 @@ def pending_request_names():
 
 def count_pending_quota(project):
     """Number of pending requests for `project` that count toward its quota."""
-    db = sqlite3.connect(str(DB_PATH))
     try:
-        if project is None:
-            row = db.execute(
-                """SELECT COUNT(*) FROM pod_request
-                   WHERE status='pending' AND counts_toward_quota=1
-                   AND assigned_project IS NULL""").fetchone()
-        else:
-            row = db.execute(
-                """SELECT COUNT(*) FROM pod_request
-                   WHERE status='pending' AND counts_toward_quota=1
-                   AND assigned_project=?""", (project,)).fetchone()
-        return row[0]
-    finally:
-        db.close()
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            if project is None:
+                row = db.execute(
+                    """SELECT COUNT(*) FROM pod_request
+                       WHERE status='pending' AND counts_toward_quota=1
+                       AND assigned_project IS NULL""").fetchone()
+            else:
+                row = db.execute(
+                    """SELECT COUNT(*) FROM pod_request
+                       WHERE status='pending' AND counts_toward_quota=1
+                       AND assigned_project=?""", (project,)).fetchone()
+            return row[0]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"count_pending_quota: {e}")
+        return 0
 
 # ============================================================
 # Settings
