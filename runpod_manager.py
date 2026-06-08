@@ -1760,6 +1760,10 @@ def api_pod_requests_post():
             cf = True
             src = 'user'
 
+        # Fetch the pod list once and reuse it for both the quota check and the
+        # name reservation below — list_pods() is a network call to RunPod.
+        pods = list_pods()
+
         # Window + quota are enforced once, at request-creation time (admins bypass).
         if not admin:
             w = check_pod_window()
@@ -1768,12 +1772,11 @@ def api_pod_requests_post():
                                 "error": f"Запуск подов ограничен. Снова будет доступен в {w['until']} UTC."}), 400
             quotas = get_settings().get("project_quotas") or {}
             quota = quotas.get(ap, DEFAULT_PROJECT_QUOTA)
-            used = project_quota_usage(ap)
+            used = project_quota_usage(ap, pods=pods)
             if used >= quota:
                 return jsonify({"ok": False,
                                 "error": f"Достигнут лимит {ap}: {used}/{quota}"}), 400
 
-        pods = list_pods()
         reserved = pods + [{"name": n} for n in pending_request_names()]
         name = next_name(reserved, ap)
         rid = create_pod_request(name, ap, cf, src, nick)
