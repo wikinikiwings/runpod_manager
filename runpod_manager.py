@@ -1534,6 +1534,63 @@ def check_idle_timeouts():
     except Exception as e:
         log.error(f"check_idle_timeouts: {e}")
 
+def process_pending_requests():
+    """One auto-retry tick: for each pending pod_request, time it out, retry its
+    deploy, or fulfil it. Each request is isolated in try/except so one failure
+    can't abort the tick. Driven by pod_request_loop()."""
+    s = get_settings()
+    timeout_min = s.get("pod_request_timeout_minutes", 15)
+    now = now_utc()
+    for req in list_pending_requests():
+        rid = req["id"]
+        try:
+            # 1) Timeout check — give up without attempting a deploy.
+            created = parse_iso(req["created_at"])
+            if created and (now - created).total_seconds() >= timeout_min * 60:
+                update_pod_request(rid, status="timed_out", finished_at=now_iso())
+                log_action("REQUEST_TIMEOUT", "[SYSTEM]", "request timeout", req["pod_name"], "")
+                continue
+
+            # 2) Attempt the deploy (quota/window were reserved at creation).
+            try:
+                result = create_pod_via_graphql(req["pod_name"])
+            except GpuUnavailableError as e:
+                update_pod_request(rid, last_attempt_at=now_iso(), last_error=str(e))
+                continue
+            except Exception as e:
+                update_pod_request(rid, status="failed", last_error=str(e), finished_at=now_iso())
+                log.error(f"pod_request {rid}: permanent deploy failure: {e}")
+                continue
+
+            pid = result.get("id", "") if isinstance(result, dict) else ""
+
+            # 3) Re-read status — the user may have cancelled during the deploy.
+            fresh = get_pod_request(rid)
+            if fresh and fresh["status"] == "cancelled":
+                if pid:
+                    try:
+                        delete_pod(pid)
+                    except Exception as e:
+                        log.error(f"pod_request {rid}: failed to clean up orphan pod {pid}: {e}")
+                continue
+
+            # 4) Success → assignment + fulfil + log as a normal create.
+            try:
+                upsert_pod_assignment(pid, req["assigned_project"],
+                                      req["counts_toward_quota"], req["creation_source"],
+                                      req["requested_by"])
+            except Exception as e:
+                update_pod_request(rid, status="failed", pod_id=pid, finished_at=now_iso(),
+                                   last_error=f"под создан (id={pid}), но assignment не записан — admin /assign: {e}")
+                log_action(req["requested_by"], req["assigned_project"], "create", req["pod_name"], pid)
+                continue
+
+            update_pod_request(rid, status="fulfilled", pod_id=pid, finished_at=now_iso())
+            log_action(req["requested_by"], req["assigned_project"], "create", req["pod_name"], pid)
+        except Exception as e:
+            log.error(f"process_pending_requests: request {rid}: {e}")
+
+
 # ============================================================
 # Scheduler
 # ============================================================

@@ -207,6 +207,74 @@ class ApiPodsPostSignalTest(unittest.TestCase):
         self.assertEqual(r.get_json()["requests"], [])
 
 
+class WorkerTickTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._orig_db_path = rm.DB_PATH
+        rm.DB_PATH = Path(self.tmp.name)
+        rm.init_db()
+
+    def tearDown(self):
+        rm.DB_PATH = self._orig_db_path
+        try:
+            os.unlink(self.tmp.name)
+        except OSError:
+            pass
+
+    def test_success_marks_fulfilled_and_writes_assignment(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        with mock.patch.object(rm, "create_pod_via_graphql",
+                               return_value={"id": "p_new", "name": "cv_pod_1"}), \
+             mock.patch.object(rm, "upsert_pod_assignment") as upsert:
+            rm.process_pending_requests()
+            upsert.assert_called_once_with("p_new", "CV", 1, "user", "alice")
+        row = rm.get_pod_request(rid)
+        self.assertEqual(row["status"], "fulfilled")
+        self.assertEqual(row["pod_id"], "p_new")
+
+    def test_gpu_unavailable_stays_pending(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        with mock.patch.object(rm, "create_pod_via_graphql",
+                               side_effect=rm.GpuUnavailableError("no resources")):
+            rm.process_pending_requests()
+        row = rm.get_pod_request(rid)
+        self.assertEqual(row["status"], "pending")
+        self.assertIn("no resources", row["last_error"])
+
+    def test_permanent_error_marks_failed(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        with mock.patch.object(rm, "create_pod_via_graphql",
+                               side_effect=RuntimeError("invalid api key")):
+            rm.process_pending_requests()
+        self.assertEqual(rm.get_pod_request(rid)["status"], "failed")
+
+    def test_timeout_marks_timed_out_without_deploy(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        # Backdate created_at well past the 15-minute default timeout.
+        rm.update_pod_request(rid, created_at="2000-01-01T00:00:00Z")
+        with mock.patch.object(rm, "create_pod_via_graphql") as deploy:
+            rm.process_pending_requests()
+            deploy.assert_not_called()
+        self.assertEqual(rm.get_pod_request(rid)["status"], "timed_out")
+
+    def test_cancelled_mid_deploy_deletes_pod(self):
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+
+        def deploy_then_cancel(name):
+            # Simulate the user cancelling while the deploy is in flight.
+            rm.update_pod_request(rid, status="cancelled")
+            return {"id": "p_orphan", "name": name}
+
+        with mock.patch.object(rm, "create_pod_via_graphql", side_effect=deploy_then_cancel), \
+             mock.patch.object(rm, "upsert_pod_assignment") as upsert, \
+             mock.patch.object(rm, "delete_pod") as delete_pod:
+            rm.process_pending_requests()
+            upsert.assert_not_called()
+            delete_pod.assert_called_once_with("p_orphan")
+        self.assertEqual(rm.get_pod_request(rid)["status"], "cancelled")
+
+
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):
         self._orig_key = rm._api_key
