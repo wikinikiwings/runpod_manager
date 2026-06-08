@@ -62,3 +62,21 @@ class PodRequestDBTest(unittest.TestCase):
         cur = db.execute("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_pr_status'")
         self.assertIsNotNone(cur.fetchone())
         db.close()
+
+
+class GpuUnavailableDetectTest(unittest.TestCase):
+    def test_matches_runpod_phrases(self):
+        self.assertTrue(rm.is_gpu_unavailable_error(
+            "There are no longer any instances available with the requested "
+            "specifications. Please refresh and try again."))
+        self.assertTrue(rm.is_gpu_unavailable_error("no resources"))
+        self.assertTrue(rm.is_gpu_unavailable_error("NO RESOURCES currently"))
+
+    def test_rejects_other_errors(self):
+        self.assertFalse(rm.is_gpu_unavailable_error("invalid api key"))
+        self.assertFalse(rm.is_gpu_unavailable_error("template not found"))
+        self.assertFalse(rm.is_gpu_unavailable_error(""))
+        self.assertFalse(rm.is_gpu_unavailable_error(None))
+
+    def test_error_is_runtimeerror_subclass(self):
+        self.assertTrue(issubclass(rm.GpuUnavailableError, RuntimeError))

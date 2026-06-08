@@ -1223,6 +1223,29 @@ def list_pods():
 # Python urllib User-Agent (returns 'error code: 1010'). We must send a
 # meaningful UA — 'RunPod-Manager/6.0' is what we already use successfully
 # in try_gql_bearer for listing pods.
+# A GPU "no instances available" deploy failure is RETRYABLE (the GPU may free
+# up later) and is what the auto-retry "заявка" feature waits on. We give it a
+# dedicated exception type so create_pod() can skip the pointless CLI fallback
+# (the CLI also fails on scarcity) and so api_pods_post can offer the user a
+# friendly "leave a request?" dialog instead of a scary raw error.
+_GPU_UNAVAILABLE_PHRASES = (
+    "no longer any instances available",
+    "instances available with the requested",
+    "no resources",
+)
+
+def is_gpu_unavailable_error(msg):
+    """True if `msg` looks like RunPod's 'no GPU instances available' error."""
+    if not msg:
+        return False
+    m = str(msg).lower()
+    return any(p in m for p in _GPU_UNAVAILABLE_PHRASES)
+
+class GpuUnavailableError(RuntimeError):
+    """Deploy failed specifically because no GPU instances are currently
+    available — a retryable condition, not a permanent error."""
+    pass
+
 DEPLOY_MUTATION = """mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
   podFindAndDeployOnDemand(input: $input) {
     id
