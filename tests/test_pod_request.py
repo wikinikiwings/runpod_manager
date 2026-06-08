@@ -186,6 +186,26 @@ class ApiPodsPostSignalTest(unittest.TestCase):
         self.assertEqual(r.status_code, 404)
         self.assertEqual(rm.get_pod_request(rid)["status"], "pending")
 
+    def test_pods_get_includes_requests_and_quota(self):
+        self._login()
+        rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        with mock.patch.object(rm, "list_pods", return_value=[]):
+            r = self.client.get("/api/pods")
+        body = r.get_json()
+        self.assertTrue(body["ok"])
+        self.assertEqual(len(body["requests"]), 1)
+        self.assertEqual(body["requests"][0]["name"], "cv_pod_1")
+        self.assertEqual(body["requests"][0]["status"], "pending")
+        # pending request occupies a quota slot
+        self.assertEqual(body["projectRunning"], 1)
+
+    def test_pods_get_hides_other_projects_requests(self):
+        self._login()  # CV
+        rm.create_pod_request("dv_pod_1", "DV", True, "user", "bob")
+        with mock.patch.object(rm, "list_pods", return_value=[]):
+            r = self.client.get("/api/pods")
+        self.assertEqual(r.get_json()["requests"], [])
+
 
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):

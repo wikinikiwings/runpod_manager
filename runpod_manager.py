@@ -1650,11 +1650,8 @@ def api_pods_get():
         # — admin-specific bypass logic is inside create_pod, not here.
         quotas = s.get("project_quotas") or {}
         project_quota = quotas.get(viewer_project, DEFAULT_PROJECT_QUOTA)
-        # Count running pods IN THIS PROJECT with counts_toward_quota=True.
-        project_running = sum(1 for p in all_pods
-                              if p.get("desiredStatus") == "RUNNING"
-                              and p.get("assignedProject") == viewer_project
-                              and p.get("countsTowardQuota"))
+        # Quota usage = running pods + pending requests, both counting toward quota.
+        project_running = project_quota_usage(viewer_project, pods=all_pods)
         quota_used = min(project_running, project_quota)
         over_quota = max(0, project_running - project_quota)
 
@@ -1670,7 +1667,17 @@ def api_pods_get():
         sched = {"time": s["auto_delete_time"],
                  "lastLog": s.get("auto_delete_last_log", "")} if s.get("auto_delete_enabled") else None
         window = check_pod_window()
+        req_rows = list_visible_requests(viewer_project, viewer_is_admin)
+        requests_payload = [{
+            "id": r["id"],
+            "name": r["pod_name"],
+            "assignedProject": r["assigned_project"],
+            "status": r["status"],
+            "lastError": r["last_error"],
+            "createdAt": r["created_at"],
+        } for r in req_rows]
         return jsonify({"ok": True, "pods": pods,
+                        "requests": requests_payload,
                         "viewerProject": viewer_project,
                         "projectQuota": project_quota,
                         "projectRunning": project_running,
