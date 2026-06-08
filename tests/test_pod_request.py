@@ -8,6 +8,7 @@ import tempfile
 import sqlite3
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
@@ -83,3 +84,31 @@ class GpuUnavailableDetectTest(unittest.TestCase):
 
     def test_error_is_runtimeerror_subclass(self):
         self.assertTrue(issubclass(rm.GpuUnavailableError, RuntimeError))
+
+
+class CreatePodErrorRoutingTest(unittest.TestCase):
+    def setUp(self):
+        self._orig_key = rm._api_key
+        rm._api_key = "test-key"
+
+    def tearDown(self):
+        rm._api_key = self._orig_key
+
+    def test_graphql_gpu_unavailable_does_not_fall_back_to_cli(self):
+        # GraphQL raises GpuUnavailableError → create_pod must re-raise it,
+        # NOT call the CLI fallback.
+        with mock.patch.object(rm, "create_pod_via_graphql",
+                               side_effect=rm.GpuUnavailableError("GraphQL: no resources")), \
+             mock.patch.object(rm, "run_cmd") as run_cmd:
+            with self.assertRaises(rm.GpuUnavailableError):
+                rm.create_pod("cv_pod_1", bypass_window=True)
+            run_cmd.assert_not_called()
+
+    def test_graphql_other_error_falls_back_to_cli(self):
+        with mock.patch.object(rm, "create_pod_via_graphql",
+                               side_effect=RuntimeError("GraphQL: bad template")), \
+             mock.patch.object(rm, "run_cmd",
+                               return_value={"ok": True, "data": {"id": "p1", "name": "cv_pod_1"}}) as run_cmd:
+            result = rm.create_pod("cv_pod_1", bypass_window=True)
+            run_cmd.assert_called_once()
+            self.assertEqual(result.get("id"), "p1")

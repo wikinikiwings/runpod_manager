@@ -1328,7 +1328,10 @@ def create_pod_via_graphql(name):
                 msgs.append(err.get("message", str(err)))
             else:
                 msgs.append(str(err))
-        raise RuntimeError("GraphQL: " + "; ".join(msgs)[:300])
+        joined = "; ".join(msgs)[:300]
+        if is_gpu_unavailable_error(joined):
+            raise GpuUnavailableError("GraphQL: " + joined)
+        raise RuntimeError("GraphQL: " + joined)
 
     pod = (data.get("data") or {}).get("podFindAndDeployOnDemand")
     if not pod or not pod.get("id"):
@@ -1376,6 +1379,11 @@ def create_pod(name, bypass_window=False):
         try:
             log.info(f"Creating pod {name!r} via GraphQL DeployOnDemand mutation")
             return create_pod_via_graphql(name)
+        except GpuUnavailableError:
+            # No GPU available right now. The CLI path also fails on scarcity,
+            # so don't bother — surface the retryable error to the caller.
+            log.info(f"GraphQL deploy: no GPU available for {name!r}")
+            raise
         except Exception as e:
             log.warning(f"GraphQL deploy failed for {name!r}: {e}. Falling back to CLI.")
             # fall through to CLI path below
@@ -1403,6 +1411,8 @@ def create_pod(name, bypass_window=False):
     if not res["ok"]:
         # Log raw error for postmortem, show humanized version to user
         log.error(f"create_pod CLI fallback also failed, raw error: {res['error']}")
+        if is_gpu_unavailable_error(res["error"]):
+            raise GpuUnavailableError(humanize_cli_error(res["error"]))
         raise RuntimeError(humanize_cli_error(res["error"]))
     d=res["data"]
     if isinstance(d,dict): return d
