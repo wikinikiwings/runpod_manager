@@ -1962,7 +1962,7 @@ def api_admin_settings_get():
     return jsonify({"ok":True,"settings":{
         "project_quotas": quotas,
         "project_autodelete_offset_minutes": offsets,
-        **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until"]}
+        **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until","pod_request_timeout_minutes","pod_request_retry_interval_seconds"]}
     }})
 
 @app.route("/api/admin/settings", methods=["POST"])
@@ -2008,6 +2008,13 @@ def api_admin_settings_post():
     if "pod_window_until" in data:
         t=data["pod_window_until"].strip()
         if re.match(r"^\d{1,2}:\d{2}$",t): s["pod_window_until"]=t
+    # Auto-retry "заявка на под" tuning
+    if "pod_request_timeout_minutes" in data:
+        try: s["pod_request_timeout_minutes"]=max(1,min(1440,int(data["pod_request_timeout_minutes"])))
+        except: pass
+    if "pod_request_retry_interval_seconds" in data:
+        try: s["pod_request_retry_interval_seconds"]=max(5,min(600,int(data["pod_request_retry_interval_seconds"])))
+        except: pass
     save_settings(s); return jsonify({"ok":True})
 
 @app.route("/api/admin/delete-all", methods=["POST"])

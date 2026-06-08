@@ -308,3 +308,54 @@ class CreatePodErrorRoutingTest(unittest.TestCase):
             result = rm.create_pod("cv_pod_1", bypass_window=True)
             run_cmd.assert_called_once()
             self.assertEqual(result.get("id"), "p1")
+
+
+class AdminSettingsTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._orig_db_path = rm.DB_PATH
+        rm.DB_PATH = Path(self.tmp.name)
+        # Isolate settings file too
+        self.stmp = tempfile.NamedTemporaryFile(suffix=".json", delete=False)
+        self.stmp.close()
+        self._orig_settings = rm.SETTINGS_FILE
+        rm.SETTINGS_FILE = Path(self.stmp.name)
+        os.unlink(self.stmp.name)  # let load_settings recreate from defaults
+        rm.init_db()
+        rm.app.config["TESTING"] = True
+        self.client = rm.app.test_client()
+
+    def tearDown(self):
+        rm.DB_PATH = self._orig_db_path
+        rm.SETTINGS_FILE = self._orig_settings
+        for p in (self.tmp.name, self.stmp.name):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    def _admin(self):
+        with self.client.session_transaction() as sess:
+            sess["admin"] = True
+
+    def test_settings_post_persists_request_fields(self):
+        self._admin()
+        r = self.client.post("/api/admin/settings", json={
+            "pod_request_timeout_minutes": 30,
+            "pod_request_retry_interval_seconds": 20,
+        })
+        self.assertEqual(r.status_code, 200)
+        s = rm.get_settings()
+        self.assertEqual(s["pod_request_timeout_minutes"], 30)
+        self.assertEqual(s["pod_request_retry_interval_seconds"], 20)
+
+    def test_settings_post_clamps_bad_values(self):
+        self._admin()
+        self.client.post("/api/admin/settings", json={
+            "pod_request_timeout_minutes": 0,
+            "pod_request_retry_interval_seconds": 1,
+        })
+        s = rm.get_settings()
+        self.assertEqual(s["pod_request_timeout_minutes"], 1)   # min 1
+        self.assertEqual(s["pod_request_retry_interval_seconds"], 5)  # min 5
