@@ -41,6 +41,24 @@
     • admin "Delete all"
 ```
 
+## Заявка на под (авторетрай) — состояния `pod_request`
+
+Если `create` падает из-за нехватки видеокарт, вместо ошибки создаётся **заявка**
+(таблица `pod_request`), которую фоновый воркер `pod_request_loop` повторяет до
+успеха или таймаута. Подробности — `docs/graphql-deploy.md` (раздел «Авторетрай»).
+
+```
+  pending ──┬─► fulfilled    (деплой удался → upsert_pod_assignment, появляется реальный под)
+            ├─► timed_out    (вышел pod_request_timeout_minutes — карточка с «Закрыть»)
+            ├─► failed       (неретраемая ошибка деплоя — карточка с текстом ошибки)
+            └─► cancelled    (юзер нажал «Отменить заявку»)
+```
+
+`pending` повторяется каждые `pod_request_retry_interval_seconds`. Карточки заявок
+рендерятся в общем списке подов перед реальными подами; `pending` со спиннером,
+терминальные (`timed_out`/`failed`) — с кнопкой «Закрыть» (физически удаляет строку).
+`fulfilled`/`cancelled` в списке не показываются.
+
 ## Health-check endpoints
 
 Все три — HTTP GET на `https://{pod_id}-{port}.proxy.runpod.net/...`. RunPod

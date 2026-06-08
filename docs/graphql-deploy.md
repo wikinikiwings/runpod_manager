@@ -189,3 +189,63 @@ docker compose exec runpod-manager python3 /tmp/test_deploy.py
    править в обеих местах: мутация использует имена схемы, и variables — тоже.
 4. **Прогнать `test_deploy.py`** — изолированно, без бэкенда, чтобы исключить
    баги в enrich/listing.
+
+
+## Авторетрай: заявка на под («заявка»)
+
+Когда `DeployOnDemand` падает именно из-за нехватки свободных видеокарт, мы не
+показываем красную ошибку, а предлагаем оставить **заявку** — фоновый воркер сам
+повторяет запуск, пока карта не освободится или не выйдет таймаут.
+
+**`GpuUnavailableError` (подкласс `RuntimeError`).** Детектор
+`is_gpu_unavailable_error(msg)` ловит фразы RunPod про отсутствие инстансов
+(`no resources`, `no longer any instances available`, …). `create_pod_via_graphql`
+поднимает именно этот тип, когда ошибка в теле GraphQL подходит под детектор;
+`create_pod` на нём **не делает CLI-fallback** (CLI тоже падает на дефиците) и
+пробрасывает выше. `api_pods_post` ловит его и отвечает HTTP 200 с
+`{ok:false, gpuUnavailable:true}` — фронт показывает диалог «Оставить заявку?».
+
+**Таблица `pod_request`** (DB-backed, переживает рестарт). Колонки: `pod_name`,
+`assigned_project`, `counts_toward_quota`, `creation_source`, `requested_by`,
+`status`, `created_at`, `last_attempt_at`, `last_error`, `pod_id`, `finished_at`.
+Индекс `idx_pr_status`. CRUD-хелперы: `create_pod_request`,
+`list_pending_requests`, `list_visible_requests`, `get_pod_request`,
+`update_pod_request`, `delete_pod_request`, `pending_request_names`,
+`count_pending_quota`.
+
+**Квота и имена.** Заявка резервирует слот квоты в момент создания:
+`project_quota_usage(project)` = RUNNING-поды (counts_toward_quota) + pending-заявки
+(counts_toward_quota). `next_name()` кормят `pending_request_names()`, чтобы прямой
+create и заявка не столкнулись на имени.
+
+**Воркер.** `process_pending_requests()` — один тик: для каждой pending-заявки
+проверяет таймаут → пробует `create_pod_via_graphql` → на `GpuUnavailableError`
+оставляет pending (пишет `last_error`), на прочей ошибке → `failed`, на успехе →
+`upsert_pod_assignment` + `fulfilled`. Между деплоем и записью перечитывает статус:
+если юзер отменил заявку в полёте — удаляет осиротевший под. Гоняет
+`pod_request_loop` (daemon-поток рядом со `scheduler_loop`), интервал берётся из
+настроек каждую итерацию (можно менять без рестарта).
+
+**Endpoints:** `POST /api/pod-requests` (создать, проверяет окно+квоту для не-админа),
+`DELETE /api/pod-requests/<id>` (pending → `cancelled`; терминальная → удалить
+карточку), `GET /api/pods` отдаёт `requests[]` и считает pending в `projectRunning`.
+
+**Настройки (admin):** `pod_request_timeout_minutes` (1..1440, дефолт 15) и
+`pod_request_retry_interval_seconds` (5..600, дефолт 15). Правятся в админ-панели
+(секция «🔁 Авторетрай заявки на под»).
+
+### Ручной smoke-тест (реальный деплой стоит денег — выполнять осознанно)
+
+1. Временно подменить `PRESET["gpu_id"]` на заведомо недоступный тип, чтобы
+   спровоцировать `GpuUnavailableError`.
+2. **+ New Pod** → должен появиться диалог «Все видеокарты заняты … Оставить
+   заявку?» (не красный тост).
+3. **Оставить заявку** → карточка-плейсхолдер со спиннером и «подбираю свободную
+   видеокарту, ожидайте…», бейдж квоты увеличивается.
+4. `docker compose logs -f runpod-manager` — воркер логирует попытку раз в
+   ~интервал секунд.
+5. Вернуть рабочий `PRESET["gpu_id"]` → в течение одного интервала карточка
+   превращается в реальный под.
+6. **Отменить заявку** на свежей pending → карточка исчезает, квота освобождается.
+7. Поставить таймаут 1 минуту, оставить заявку без GPU, подождать → карточка
+   показывает «Не удалось…» с кнопкой **Закрыть**.
