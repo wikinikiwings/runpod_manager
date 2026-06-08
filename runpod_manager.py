@@ -2278,7 +2278,7 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
 <div class="tw" id="tw"></div><div class="ov" id="ov"></div>
 
 <script>
-let pods=[],busy=new Set(),maxPods=99,isAdmin=false,user=null;
+let pods=[],requests=[],busy=new Set(),maxPods=99,isAdmin=false,user=null;
 let podWindowState=null;  // {enabled, is_open, from, until, opens_in_sec, closes_in_sec} from /api/pods
 // Activity log auto-refresh state. The interval is started when sidebar opens AND admin
 // is logged in, and cleared when either condition becomes false. lastActivityIds tracks
@@ -2691,7 +2691,7 @@ async function refreshPods(){
     // mid-session, for example). In that case the login screen is already shown
     // and we just silently stop — nothing more to do here.
     if(!r)return;
-    pods=r.pods||[];maxPods=r.maxPods||99;
+    pods=r.pods||[];requests=r.requests||[];maxPods=r.maxPods||99;
     // Server is the authoritative source for admin status. Reading it from
     // /api/pods response means the eye icons render correctly even immediately
     // after page load, before the user ever opens the admin sidebar. If the
@@ -2769,13 +2769,32 @@ async function createPod(){if(!user)return;const b=$('cb');b.disabled=true;b.inn
     if(apEl){const v=apEl.value;if(v==='__null__')body.assigned_project=null;else if(v&&v!=='')body.assigned_project=v;}
     if(cfEl)body.counts_toward_quota=cfEl.checked;
   }
-  try{const r=await aok('/api/pods','POST',body);toast(r.name+' created!','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
+  try{
+    const r=await api('/api/pods','POST',body);
+    if(r.ok){toast(r.name+' created!','ok');await refreshPods();refreshActivityLog();return;}
+    if(r.gpuUnavailable){
+      b.disabled=false;b.innerHTML='+ New Pod';
+      const ok=await showDlg('<h3>Все видеокарты заняты</h3><p style="color:var(--t2);font-size:13px;margin-bottom:18px">Кажется, в данный момент все видеокарты заняты. Оставить заявку на под? Менеджер сам поймает свободную карту.</p><div class="da"><button class="btn" onclick="closeDlg(false)">Отмена</button><button class="btn bs bp" onclick="closeDlg(true)">Оставить заявку</button></div>');
+      if(!ok)return;
+      const rr=await api('/api/pod-requests','POST',body);
+      if(rr.ok){toast('Заявка создана — подбираю видеокарту','ok');await refreshPods();refreshActivityLog();}
+      else{toast(rr.error||'Не удалось создать заявку','er');}
+      return;
+    }
+    toast(r.error||'Failed','er');
+  }catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
 
 async function delPod(id,n){
   showDlg('<h3>Delete?</h3><p style="color:var(--t2);font-size:13px;margin-bottom:18px">Terminate <b style="color:var(--t)">'+n+'</b>?</p><div class="da"><button class="btn" onclick="closeDlg(false)">Cancel</button><button class="btn bs bd" onclick="closeDlg(true)">Delete</button></div>').then(async ok=>{
     if(!ok||!user)return;busy.add(id);render();
     // Identity from session, body is empty.
     try{const j=await api('/api/pods/'+id,'DELETE',{});if(!j.ok)throw new Error(j.error);toast(n+' deleted','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{busy.delete(id)}})}
+
+async function cancelRequest(id){
+  if(!user)return;
+  try{const j=await api('/api/pod-requests/'+id,'DELETE',{});if(!j.ok)throw new Error(j.error);await refreshPods();refreshActivityLog()}
+  catch(e){toast(e.message,'er')}
+}
 
 async function startPod(id,n){busy.add(id);render();try{await aok('/api/pods/'+id+'/start','POST',{});toast(n+' started','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{busy.delete(id)}}
 
@@ -3008,8 +3027,25 @@ function render(){
       PROJECTS.forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;apEl.appendChild(o);});
     }
   }
-  if(!pods.length){$('pl').innerHTML='<div class="empty"><p>No pods. Click <b>+ New Pod</b>.</p></div>';return}
-  $('pl').innerHTML=[...pods].sort((a,b)=>{const d=(a.desiredStatus==='RUNNING'?0:1)-(b.desiredStatus==='RUNNING'?0:1);return d||((a.name||'').localeCompare(b.name||''))}).map(p=>{
+  const reqCards=(requests||[]).map(r=>{
+    const nm=esc(r.name);
+    if(r.status==='pending'){
+      return '<div class="pc"><div style="display:flex;align-items:center;gap:10px;padding:14px 16px">'+
+        '<span class="sp"></span>'+
+        '<div style="flex:1"><div style="font-weight:600">'+nm+'</div>'+
+        '<div style="color:var(--t2);font-size:12px">подбираю свободную видеокарту, ожидайте…</div></div>'+
+        '<button class="btn bs" onclick="cancelRequest('+r.id+')">Отменить заявку</button></div></div>';
+    }
+    const msg=r.status==='timed_out'
+      ? 'Не удалось подобрать видеокарту за отведённое время'
+      : (esc(r.lastError||'Не удалось создать под'));
+    return '<div class="pc"><div style="display:flex;align-items:center;gap:10px;padding:14px 16px">'+
+      '<div style="flex:1"><div style="font-weight:600">'+nm+'</div>'+
+      '<div style="color:var(--er,#e55);font-size:12px">'+msg+'</div></div>'+
+      '<button class="btn bs" onclick="cancelRequest('+r.id+')">Закрыть</button></div></div>';
+  }).join('');
+  if(!pods.length&&!reqCards){$('pl').innerHTML='<div class="empty"><p>No pods. Click <b>+ New Pod</b>.</p></div>';return}
+  $('pl').innerHTML=reqCards+[...pods].sort((a,b)=>{const d=(a.desiredStatus==='RUNNING'?0:1)-(b.desiredStatus==='RUNNING'?0:1);return d||((a.name||'').localeCompare(b.name||''))}).map(p=>{
     const st=p.desiredStatus||'UNKNOWN',isR=st==='RUNNING',isS=st==='EXITED'||st==='STOPPED',ib=busy.has(p.id),sn=esc(p.name),t=p.telemetry||{};
     const svcReady=p.serviceReady===true;
     const techOpen=expandedTech.has(p.id);
