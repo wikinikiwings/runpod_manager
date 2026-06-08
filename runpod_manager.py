@@ -295,6 +295,20 @@ def init_db():
             creation_source TEXT NOT NULL DEFAULT 'user',
             assigned_at TEXT NOT NULL,
             assigned_by TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pod_request (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pod_name            TEXT NOT NULL,
+            assigned_project    TEXT,
+            counts_toward_quota INTEGER NOT NULL DEFAULT 1,
+            creation_source     TEXT NOT NULL DEFAULT 'user',
+            requested_by        TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            created_at          TEXT NOT NULL,
+            last_attempt_at     TEXT,
+            last_error          TEXT,
+            pod_id              TEXT,
+            finished_at         TEXT);
+        CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
     """)
     db.close()
     migrate_to_pod_assignment()
