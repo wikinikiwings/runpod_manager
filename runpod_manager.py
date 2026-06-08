@@ -89,6 +89,10 @@ DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
     # Prevents double-firing within the same UTC day. Populated at runtime.
     "project_autodelete_last_run":{},
     "idle_timeout_enabled":True,"idle_timeout_minutes":120,
+    # Auto-retry "заявка на под": total retry window (minutes) and interval
+    # between deploy attempts (seconds). See pod_request_loop.
+    "pod_request_timeout_minutes":15,
+    "pod_request_retry_interval_seconds":15,
     # Pod creation restriction window (strategy A: only blocks NEW pods).
     # Times are UTC 'HH:MM'. 'from' and 'until' define the period when creation is
     # FORBIDDEN (typically night hours). Supports overnight spans (e.g. 22:00 -> 08:00).
@@ -295,6 +299,20 @@ def init_db():
             creation_source TEXT NOT NULL DEFAULT 'user',
             assigned_at TEXT NOT NULL,
             assigned_by TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS pod_request (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            pod_name            TEXT NOT NULL,
+            assigned_project    TEXT,
+            counts_toward_quota INTEGER NOT NULL DEFAULT 1,
+            creation_source     TEXT NOT NULL DEFAULT 'user',
+            requested_by        TEXT NOT NULL,
+            status              TEXT NOT NULL DEFAULT 'pending',
+            created_at          TEXT NOT NULL,
+            last_attempt_at     TEXT,
+            last_error          TEXT,
+            pod_id              TEXT,
+            finished_at         TEXT);
+        CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
     """)
     db.close()
     migrate_to_pod_assignment()
@@ -566,6 +584,146 @@ def determine_creation_source_for_unknown(pid):
     except Exception as e:
         log.error(f"determine_creation_source_for_unknown: {e}")
         return 'external'  # safer fallback
+
+# ----- Pod requests (auto-retry "заявка на под") -----
+
+def create_pod_request(pod_name, assigned_project, counts_toward_quota,
+                       creation_source, requested_by):
+    """Insert a new pending pod_request. Returns the new row id."""
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        cur = db.execute("""INSERT INTO pod_request
+            (pod_name, assigned_project, counts_toward_quota, creation_source,
+             requested_by, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', ?)""",
+            (pod_name, assigned_project, 1 if counts_toward_quota else 0,
+             creation_source, requested_by, now_iso()))
+        db.commit()
+        return cur.lastrowid
+    finally:
+        db.close()
+
+def list_pending_requests():
+    """All pod_request rows with status='pending', oldest first, as dicts."""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            rows = db.execute(
+                "SELECT * FROM pod_request WHERE status='pending' ORDER BY created_at"
+            ).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"list_pending_requests: {e}")
+        return []
+
+def list_visible_requests(project=None, viewer_is_admin=False):
+    """Requests to render as cards: statuses pending/timed_out/failed.
+    Admin sees all; a regular user sees only their own project's requests."""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            if viewer_is_admin:
+                rows = db.execute(
+                    """SELECT * FROM pod_request
+                       WHERE status IN ('pending','timed_out','failed')
+                       ORDER BY created_at"""
+                ).fetchall()
+            else:
+                # Non-admin callers always have a concrete project (require_user
+                # guarantees it); filter to just that project's requests.
+                rows = db.execute(
+                    """SELECT * FROM pod_request
+                       WHERE status IN ('pending','timed_out','failed')
+                       AND assigned_project=? ORDER BY created_at""",
+                    (project,)).fetchall()
+            return [dict(r) for r in rows]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"list_visible_requests: {e}")
+        return []
+
+def get_pod_request(req_id):
+    """Single pod_request row as dict, or None."""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        db.row_factory = sqlite3.Row
+        try:
+            r = db.execute("SELECT * FROM pod_request WHERE id=?", (req_id,)).fetchone()
+            return dict(r) if r else None
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"get_pod_request: {e}")
+        return None
+
+def update_pod_request(req_id, **fields):
+    """Update the given columns on a pod_request row. No-op if fields empty."""
+    if not fields:
+        return
+    # Column names come from caller-controlled **fields keys (internal call
+    # sites only, never user input) — safe to interpolate. Values are still
+    # passed as bound parameters.
+    cols = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [req_id]
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        db.execute(f"UPDATE pod_request SET {cols} WHERE id=?", vals)
+        db.commit()
+    finally:
+        db.close()
+
+def delete_pod_request(req_id):
+    """Physically remove a pod_request row (used by 'Закрыть' on terminal cards)."""
+    db = sqlite3.connect(str(DB_PATH))
+    try:
+        db.execute("DELETE FROM pod_request WHERE id=?", (req_id,))
+        db.commit()
+    finally:
+        db.close()
+
+def pending_request_names():
+    """Names reserved by pending requests — feed into next_name() so a request
+    and a real pod (or two requests) never collide on a name."""
+    return [r["pod_name"] for r in list_pending_requests()]
+
+def count_pending_quota(project):
+    """Number of pending requests for `project` that count toward its quota."""
+    try:
+        db = sqlite3.connect(str(DB_PATH))
+        try:
+            if project is None:
+                row = db.execute(
+                    """SELECT COUNT(*) FROM pod_request
+                       WHERE status='pending' AND counts_toward_quota=1
+                       AND assigned_project IS NULL""").fetchone()
+            else:
+                row = db.execute(
+                    """SELECT COUNT(*) FROM pod_request
+                       WHERE status='pending' AND counts_toward_quota=1
+                       AND assigned_project=?""", (project,)).fetchone()
+            return row[0]
+        finally:
+            db.close()
+    except Exception as e:
+        log.error(f"count_pending_quota: {e}")
+        return 0
+
+def project_quota_usage(project, pods=None):
+    """Quota slots in use for `project`: RUNNING pods that count toward quota,
+    plus pending requests that count toward quota. `pods` may be passed in to
+    avoid a redundant list_pods() call."""
+    if pods is None:
+        pods = list_pods()
+    running = sum(1 for p in pods
+                  if p.get("desiredStatus") == "RUNNING"
+                  and p.get("assignedProject") == project
+                  and p.get("countsTowardQuota"))
+    return running + count_pending_quota(project)
 
 # ============================================================
 # Settings
@@ -1081,6 +1239,29 @@ def list_pods():
 # Python urllib User-Agent (returns 'error code: 1010'). We must send a
 # meaningful UA — 'RunPod-Manager/6.0' is what we already use successfully
 # in try_gql_bearer for listing pods.
+# A GPU "no instances available" deploy failure is RETRYABLE (the GPU may free
+# up later) and is what the auto-retry "заявка" feature waits on. We give it a
+# dedicated exception type so create_pod() can skip the pointless CLI fallback
+# (the CLI also fails on scarcity) and so api_pods_post can offer the user a
+# friendly "leave a request?" dialog instead of a scary raw error.
+_GPU_UNAVAILABLE_PHRASES = (
+    "no longer any instances available",
+    "instances available with the requested",
+    "no resources",
+)
+
+def is_gpu_unavailable_error(msg):
+    """True if `msg` looks like RunPod's 'no GPU instances available' error."""
+    if not msg:
+        return False
+    m = str(msg).lower()
+    return any(p in m for p in _GPU_UNAVAILABLE_PHRASES)
+
+class GpuUnavailableError(RuntimeError):
+    """Deploy failed specifically because no GPU instances are currently
+    available — a retryable condition, not a permanent error."""
+    pass
+
 DEPLOY_MUTATION = """mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
   podFindAndDeployOnDemand(input: $input) {
     id
@@ -1163,7 +1344,10 @@ def create_pod_via_graphql(name):
                 msgs.append(err.get("message", str(err)))
             else:
                 msgs.append(str(err))
-        raise RuntimeError("GraphQL: " + "; ".join(msgs)[:300])
+        joined = "; ".join(msgs)[:300]
+        if is_gpu_unavailable_error(joined):
+            raise GpuUnavailableError("GraphQL: " + joined)
+        raise RuntimeError("GraphQL: " + joined)
 
     pod = (data.get("data") or {}).get("podFindAndDeployOnDemand")
     if not pod or not pod.get("id"):
@@ -1194,13 +1378,11 @@ def create_pod(name, bypass_window=False):
         nick, proj = get_session_user()  # user is already authenticated via @require_user
         quotas = s.get("project_quotas") or {}
         quota = quotas.get(proj, DEFAULT_PROJECT_QUOTA)
-        current = list_pods()
-        project_running = sum(1 for p in current
-                              if p.get("desiredStatus") == "RUNNING"
-                              and p.get("assignedProject") == proj
-                              and p.get("countsTowardQuota"))
-        if project_running >= quota:
-            raise RuntimeError(f"Достигнут лимит {proj}: {project_running}/{quota}")
+        # Usage includes pending requests so a direct create can't exceed quota
+        # while requests are queued.
+        used = project_quota_usage(proj)
+        if used >= quota:
+            raise RuntimeError(f"Достигнут лимит {proj}: {used}/{quota}")
 
     # ===== PRIMARY PATH: GraphQL DeployOnDemand mutation =====
     # This uses the same endpoint as the RunPod web UI and is much more reliable
@@ -1211,6 +1393,11 @@ def create_pod(name, bypass_window=False):
         try:
             log.info(f"Creating pod {name!r} via GraphQL DeployOnDemand mutation")
             return create_pod_via_graphql(name)
+        except GpuUnavailableError:
+            # No GPU available right now. The CLI path also fails on scarcity,
+            # so don't bother — surface the retryable error to the caller.
+            log.info(f"GraphQL deploy: no GPU available for {name!r}")
+            raise
         except Exception as e:
             log.warning(f"GraphQL deploy failed for {name!r}: {e}. Falling back to CLI.")
             # fall through to CLI path below
@@ -1238,6 +1425,8 @@ def create_pod(name, bypass_window=False):
     if not res["ok"]:
         # Log raw error for postmortem, show humanized version to user
         log.error(f"create_pod CLI fallback also failed, raw error: {res['error']}")
+        if is_gpu_unavailable_error(res["error"]):
+            raise GpuUnavailableError(humanize_cli_error(res["error"]))
         raise RuntimeError(humanize_cli_error(res["error"]))
     d=res["data"]
     if isinstance(d,dict): return d
@@ -1349,6 +1538,63 @@ def check_idle_timeouts():
     except Exception as e:
         log.error(f"check_idle_timeouts: {e}")
 
+def process_pending_requests():
+    """One auto-retry tick: for each pending pod_request, time it out, retry its
+    deploy, or fulfil it. Each request is isolated in try/except so one failure
+    can't abort the tick. Driven by pod_request_loop()."""
+    s = get_settings()
+    timeout_min = s.get("pod_request_timeout_minutes", 15)
+    now = now_utc()
+    for req in list_pending_requests():
+        rid = req["id"]
+        try:
+            # 1) Timeout check — give up without attempting a deploy.
+            created = parse_iso(req["created_at"])
+            if created and (now - created).total_seconds() >= timeout_min * 60:
+                update_pod_request(rid, status="timed_out", finished_at=now_iso())
+                log_action("REQUEST_TIMEOUT", "[SYSTEM]", "request timeout", req["pod_name"], "")
+                continue
+
+            # 2) Attempt the deploy (quota/window were reserved at creation).
+            try:
+                result = create_pod_via_graphql(req["pod_name"])
+            except GpuUnavailableError as e:
+                update_pod_request(rid, last_attempt_at=now_iso(), last_error=str(e))
+                continue
+            except Exception as e:
+                update_pod_request(rid, status="failed", last_error=str(e), finished_at=now_iso())
+                log.error(f"pod_request {rid}: permanent deploy failure: {e}")
+                continue
+
+            pid = result.get("id", "") if isinstance(result, dict) else ""
+
+            # 3) Re-read status — the user may have cancelled during the deploy.
+            fresh = get_pod_request(rid)
+            if fresh and fresh["status"] == "cancelled":
+                if pid:
+                    try:
+                        delete_pod(pid)
+                    except Exception as e:
+                        log.error(f"pod_request {rid}: failed to clean up orphan pod {pid}: {e}")
+                continue
+
+            # 4) Success → assignment + fulfil + log as a normal create.
+            try:
+                upsert_pod_assignment(pid, req["assigned_project"],
+                                      req["counts_toward_quota"], req["creation_source"],
+                                      req["requested_by"])
+            except Exception as e:
+                update_pod_request(rid, status="failed", pod_id=pid, finished_at=now_iso(),
+                                   last_error=f"под создан (id={pid}), но assignment не записан — admin /assign: {e}")
+                log_action(req["requested_by"], req["assigned_project"], "create", req["pod_name"], pid)
+                continue
+
+            update_pod_request(rid, status="fulfilled", pod_id=pid, finished_at=now_iso())
+            log_action(req["requested_by"], req["assigned_project"], "create", req["pod_name"], pid)
+        except Exception as e:
+            log.error(f"process_pending_requests: request {rid}: {e}")
+
+
 # ============================================================
 # Scheduler
 # ============================================================
@@ -1402,6 +1648,21 @@ def scheduler_loop():
         except Exception as e:
             log.error(f"scheduler_loop: {e}")
         _time.sleep(30)
+
+def pod_request_loop():
+    """Daemon loop driving auto-retry of pending pod requests. Sleeps the
+    admin-configured interval (re-read each iteration so changes apply without a
+    restart), clamped to a sane minimum."""
+    while True:
+        try:
+            process_pending_requests()
+        except Exception as e:
+            log.error(f"pod_request_loop: {e}")
+        try:
+            interval = max(5, int(get_settings().get("pod_request_retry_interval_seconds", 15)))
+        except (TypeError, ValueError):
+            interval = 15
+        _time.sleep(interval)
 
 # ============================================================
 # Routes
@@ -1465,11 +1726,8 @@ def api_pods_get():
         # — admin-specific bypass logic is inside create_pod, not here.
         quotas = s.get("project_quotas") or {}
         project_quota = quotas.get(viewer_project, DEFAULT_PROJECT_QUOTA)
-        # Count running pods IN THIS PROJECT with counts_toward_quota=True.
-        project_running = sum(1 for p in all_pods
-                              if p.get("desiredStatus") == "RUNNING"
-                              and p.get("assignedProject") == viewer_project
-                              and p.get("countsTowardQuota"))
+        # Quota usage = running pods + pending requests, both counting toward quota.
+        project_running = project_quota_usage(viewer_project, pods=all_pods)
         quota_used = min(project_running, project_quota)
         over_quota = max(0, project_running - project_quota)
 
@@ -1485,7 +1743,17 @@ def api_pods_get():
         sched = {"time": s["auto_delete_time"],
                  "lastLog": s.get("auto_delete_last_log", "")} if s.get("auto_delete_enabled") else None
         window = check_pod_window()
+        req_rows = list_visible_requests(viewer_project, viewer_is_admin)
+        requests_payload = [{
+            "id": r["id"],
+            "name": r["pod_name"],
+            "assignedProject": r["assigned_project"],
+            "status": r["status"],
+            "lastError": r["last_error"],
+            "createdAt": r["created_at"],
+        } for r in req_rows]
         return jsonify({"ok": True, "pods": pods,
+                        "requests": requests_payload,
                         "viewerProject": viewer_project,
                         "projectQuota": project_quota,
                         "projectRunning": project_running,
@@ -1524,10 +1792,10 @@ def api_pods_post():
             src = 'user'
 
         pods = list_pods()
-        # Per-project pod naming: ap is either a project key or None (unassigned).
-        # next_name scans only the pods with the matching prefix so each project
-        # gets its own 1,2,3,... counter.
-        name = next_name(pods, ap)
+        # Reserve a name against BOTH real pods and pending requests so a direct
+        # create and a queued "заявка" never collide on a name.
+        reserved = pods + [{"name": n} for n in pending_request_names()]
+        name = next_name(reserved, ap)
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
         result = create_pod(name, bypass_window=admin)
         pid = result.get("id", "") if isinstance(result, dict) else ""
@@ -1545,8 +1813,84 @@ def api_pods_post():
         log_action(nick, proj, "create", name, pid)
         return jsonify({"ok":True,"name":name,
                         "comfyUrl":f"https://{pid}-{PRESET['comfy_port']}.proxy.runpod.net" if pid else None})
+    except GpuUnavailableError as e:
+        # Not a hard error — the GPU may free up. Signal the frontend to offer
+        # the user a "leave a request?" dialog instead of a scary red toast.
+        return jsonify({"ok": False, "gpuUnavailable": True, "error": str(e)}), 200
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
+
+@app.route("/api/pod-requests", methods=["POST"])
+@require_user
+def api_pod_requests_post():
+    """Create an auto-retry pod request ('заявка'). Reserves a quota slot now;
+    a background worker (pod_request_loop) retries the deploy until success or
+    the admin-configured timeout."""
+    try:
+        nick, proj = g.current_user
+        admin = is_admin()
+        data = request.get_json(silent=True) or {}
+
+        # Admin-only fields, mirroring api_pods_post.
+        if admin:
+            ap = data.get("assigned_project")
+            if ap is not None and ap not in PROJECTS:
+                return jsonify({"ok": False, "error": "Unknown project"}), 400
+            cf = bool(data.get("counts_toward_quota", False))
+            src = 'admin'
+        else:
+            ap = proj
+            cf = True
+            src = 'user'
+
+        # Fetch the pod list once and reuse it for both the quota check and the
+        # name reservation below — list_pods() is a network call to RunPod.
+        pods = list_pods()
+
+        # Window + quota are enforced once, at request-creation time (admins bypass).
+        if not admin:
+            w = check_pod_window()
+            if not w["is_open"]:
+                return jsonify({"ok": False,
+                                "error": f"Запуск подов ограничен. Снова будет доступен в {w['until']} UTC."}), 400
+            quotas = get_settings().get("project_quotas") or {}
+            quota = quotas.get(ap, DEFAULT_PROJECT_QUOTA)
+            used = project_quota_usage(ap, pods=pods)
+            if used >= quota:
+                return jsonify({"ok": False,
+                                "error": f"Достигнут лимит {ap}: {used}/{quota}"}), 400
+
+        reserved = pods + [{"name": n} for n in pending_request_names()]
+        name = next_name(reserved, ap)
+        rid = create_pod_request(name, ap, cf, src, nick)
+        log_action(nick, proj, "request", name, "")
+        return jsonify({"ok": True, "request": {
+            "id": rid, "name": name, "status": "pending", "assignedProject": ap}})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.route("/api/pod-requests/<int:req_id>", methods=["DELETE"])
+@require_user
+def api_pod_requests_delete(req_id):
+    """Cancel a pending request, or close (dismiss) a terminal one.
+    Project-scoped: a non-admin can only touch their own project's requests;
+    others return 404 to keep existence private (mirrors api_del)."""
+    try:
+        nick, proj = g.current_user
+        req = get_pod_request(req_id)
+        if req is None:
+            return jsonify({"ok": False, "error": "Request not found"}), 404
+        if not is_admin() and req["assigned_project"] != proj:
+            return jsonify({"ok": False, "error": "Request not found"}), 404
+        if req["status"] == "pending":
+            update_pod_request(req_id, status="cancelled", finished_at=now_iso())
+            log_action(nick, proj, "request_cancel", req["pod_name"], "")
+        else:
+            # timed_out / failed → 'Закрыть' just removes the card.
+            delete_pod_request(req_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.route("/api/pods/<pid>", methods=["DELETE"])
 @require_user
@@ -1618,7 +1962,7 @@ def api_admin_settings_get():
     return jsonify({"ok":True,"settings":{
         "project_quotas": quotas,
         "project_autodelete_offset_minutes": offsets,
-        **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until"]}
+        **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until","pod_request_timeout_minutes","pod_request_retry_interval_seconds"]}
     }})
 
 @app.route("/api/admin/settings", methods=["POST"])
@@ -1664,6 +2008,13 @@ def api_admin_settings_post():
     if "pod_window_until" in data:
         t=data["pod_window_until"].strip()
         if re.match(r"^\d{1,2}:\d{2}$",t): s["pod_window_until"]=t
+    # Auto-retry "заявка на под" tuning
+    if "pod_request_timeout_minutes" in data:
+        try: s["pod_request_timeout_minutes"]=max(1,min(1440,int(data["pod_request_timeout_minutes"])))
+        except: pass
+    if "pod_request_retry_interval_seconds" in data:
+        try: s["pod_request_retry_interval_seconds"]=max(5,min(600,int(data["pod_request_retry_interval_seconds"])))
+        except: pass
     save_settings(s); return jsonify({"ok":True})
 
 @app.route("/api/admin/delete-all", methods=["POST"])
@@ -1927,7 +2278,7 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
 <div class="tw" id="tw"></div><div class="ov" id="ov"></div>
 
 <script>
-let pods=[],busy=new Set(),maxPods=99,isAdmin=false,user=null;
+let pods=[],requests=[],busy=new Set(),maxPods=99,isAdmin=false,user=null;
 let podWindowState=null;  // {enabled, is_open, from, until, opens_in_sec, closes_in_sec} from /api/pods
 // Activity log auto-refresh state. The interval is started when sidebar opens AND admin
 // is logged in, and cleared when either condition becomes false. lastActivityIds tracks
@@ -2110,6 +2461,11 @@ async function loadAdminPanel(){
         '<div class="fr"><label>Timeout (minutes)</label><input type="number" id="sIdleMin" min="1" max="1440" value="'+(s.idle_timeout_minutes||120)+'"></div>'+
         '<div class="sb-dim">Timer starts when ComfyUI becomes ready. Activity is detected from ComfyUI prompt log.</div>'+
       '</div>'+
+      '<div class="sb-section"><h3>🔁 Авторетрай заявки на под</h3>'+
+        '<div class="fr"><label>Таймаут заявки (мин)</label><input type="number" id="sReqTimeout" min="1" max="1440" value="'+(s.pod_request_timeout_minutes||15)+'"></div>'+
+        '<div class="fr"><label>Интервал ретрая (сек)</label><input type="number" id="sReqInterval" min="5" max="600" value="'+(s.pod_request_retry_interval_seconds||15)+'"></div>'+
+        '<div class="sb-dim">Когда видеокарта занята, пользователь может оставить заявку — менеджер повторяет запуск каждые «интервал» секунд, пока не получится или не выйдет «таймаут».</div>'+
+      '</div>'+
       '<div class="sb-section"><h3>⏰ Auto-delete (daily)</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sSchedOn" '+(s.auto_delete_enabled?'checked':'')+
         '><span class="sw"></span> Daily auto-delete</label></div>'+
@@ -2281,6 +2637,8 @@ async function sbSave(){
     project_autodelete_offset_minutes:offsets,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
     idle_timeout_enabled:$('sIdleOn').checked,idle_timeout_minutes:parseInt($('sIdleMin').value)||120,
+    pod_request_timeout_minutes:parseInt($('sReqTimeout').value)||15,
+    pod_request_retry_interval_seconds:parseInt($('sReqInterval').value)||15,
     pod_window_enabled:$('sWinOn').checked,
     pod_window_from:localTimeToUtc($('sWinFrom').value),
     pod_window_until:localTimeToUtc($('sWinUntil').value),
@@ -2333,7 +2691,7 @@ async function refreshPods(){
     // mid-session, for example). In that case the login screen is already shown
     // and we just silently stop — nothing more to do here.
     if(!r)return;
-    pods=r.pods||[];maxPods=r.maxPods||99;
+    pods=r.pods||[];requests=r.requests||[];maxPods=r.maxPods||99;
     // Server is the authoritative source for admin status. Reading it from
     // /api/pods response means the eye icons render correctly even immediately
     // after page load, before the user ever opens the admin sidebar. If the
@@ -2411,13 +2769,32 @@ async function createPod(){if(!user)return;const b=$('cb');b.disabled=true;b.inn
     if(apEl){const v=apEl.value;if(v==='__null__')body.assigned_project=null;else if(v&&v!=='')body.assigned_project=v;}
     if(cfEl)body.counts_toward_quota=cfEl.checked;
   }
-  try{const r=await aok('/api/pods','POST',body);toast(r.name+' created!','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
+  try{
+    const r=await api('/api/pods','POST',body);
+    if(r.ok){toast(r.name+' created!','ok');await refreshPods();refreshActivityLog();return;}
+    if(r.gpuUnavailable){
+      b.disabled=false;b.innerHTML='+ New Pod';
+      const ok=await showDlg('<h3>Все видеокарты заняты</h3><p style="color:var(--t2);font-size:13px;margin-bottom:18px">Кажется, в данный момент все видеокарты заняты. Оставить заявку на под? Менеджер сам поймает свободную карту.</p><div class="da"><button class="btn" onclick="closeDlg(false)">Отмена</button><button class="btn bs bp" onclick="closeDlg(true)">Оставить заявку</button></div>');
+      if(!ok)return;
+      const rr=await api('/api/pod-requests','POST',body);
+      if(rr.ok){toast('Заявка создана — подбираю видеокарту','ok');await refreshPods();refreshActivityLog();}
+      else{toast(rr.error||'Не удалось создать заявку','er');}
+      return;
+    }
+    toast(r.error||'Failed','er');
+  }catch(e){toast(e.message,'er')}finally{b.disabled=false;b.innerHTML='+ New Pod'}}
 
 async function delPod(id,n){
   showDlg('<h3>Delete?</h3><p style="color:var(--t2);font-size:13px;margin-bottom:18px">Terminate <b style="color:var(--t)">'+n+'</b>?</p><div class="da"><button class="btn" onclick="closeDlg(false)">Cancel</button><button class="btn bs bd" onclick="closeDlg(true)">Delete</button></div>').then(async ok=>{
     if(!ok||!user)return;busy.add(id);render();
     // Identity from session, body is empty.
     try{const j=await api('/api/pods/'+id,'DELETE',{});if(!j.ok)throw new Error(j.error);toast(n+' deleted','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{busy.delete(id)}})}
+
+async function cancelRequest(id){
+  if(!user)return;
+  try{const j=await api('/api/pod-requests/'+id,'DELETE',{});if(!j.ok)throw new Error(j.error);await refreshPods();refreshActivityLog()}
+  catch(e){toast(e.message,'er')}
+}
 
 async function startPod(id,n){busy.add(id);render();try{await aok('/api/pods/'+id+'/start','POST',{});toast(n+' started','ok');await refreshPods();refreshActivityLog()}catch(e){toast(e.message,'er')}finally{busy.delete(id)}}
 
@@ -2650,8 +3027,25 @@ function render(){
       PROJECTS.forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;apEl.appendChild(o);});
     }
   }
-  if(!pods.length){$('pl').innerHTML='<div class="empty"><p>No pods. Click <b>+ New Pod</b>.</p></div>';return}
-  $('pl').innerHTML=[...pods].sort((a,b)=>{const d=(a.desiredStatus==='RUNNING'?0:1)-(b.desiredStatus==='RUNNING'?0:1);return d||((a.name||'').localeCompare(b.name||''))}).map(p=>{
+  const reqCards=(requests||[]).map(r=>{
+    const nm=esc(r.name);
+    if(r.status==='pending'){
+      return '<div class="pc"><div style="display:flex;align-items:center;gap:10px;padding:14px 16px">'+
+        '<span class="sp"></span>'+
+        '<div style="flex:1"><div style="font-weight:600">'+nm+'</div>'+
+        '<div style="color:var(--t2);font-size:12px">подбираю свободную видеокарту, ожидайте…</div></div>'+
+        '<button class="btn bs" onclick="cancelRequest('+r.id+')">Отменить заявку</button></div></div>';
+    }
+    const msg=r.status==='timed_out'
+      ? 'Не удалось подобрать видеокарту за отведённое время'
+      : (esc(r.lastError||'Не удалось создать под'));
+    return '<div class="pc"><div style="display:flex;align-items:center;gap:10px;padding:14px 16px">'+
+      '<div style="flex:1"><div style="font-weight:600">'+nm+'</div>'+
+      '<div style="color:var(--er,#e55);font-size:12px">'+msg+'</div></div>'+
+      '<button class="btn bs" onclick="cancelRequest('+r.id+')">Закрыть</button></div></div>';
+  }).join('');
+  if(!pods.length&&!reqCards){$('pl').innerHTML='<div class="empty"><p>No pods. Click <b>+ New Pod</b>.</p></div>';return}
+  $('pl').innerHTML=reqCards+[...pods].sort((a,b)=>{const d=(a.desiredStatus==='RUNNING'?0:1)-(b.desiredStatus==='RUNNING'?0:1);return d||((a.name||'').localeCompare(b.name||''))}).map(p=>{
     const st=p.desiredStatus||'UNKNOWN',isR=st==='RUNNING',isS=st==='EXITED'||st==='STOPPED',ib=busy.has(p.id),sn=esc(p.name),t=p.telemetry||{};
     const svcReady=p.serviceReady===true;
     const techOpen=expandedTech.has(p.id);
@@ -2890,4 +3284,5 @@ if __name__=="__main__":
     else: print("  ⏱  Idle timeout: off")
     print(f"\n  🌍 http://localhost:{a.port}\n")
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    threading.Thread(target=pod_request_loop, daemon=True).start()
     app.run(host=a.host,port=a.port,debug=a.debug)
