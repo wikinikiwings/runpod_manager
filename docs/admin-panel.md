@@ -188,6 +188,22 @@ by per-project quotas in `project_quotas`.
 
 **Админы обходят окно** (тот же `bypass_window`).
 
+### `pod_request_*` (авторетрай заявки на под)
+
+Тюнинг фоновой ретрай-очереди (`pod_request_loop` → `process_pending_requests`).
+Полный механизм — `docs/graphql-deploy.md` (раздел «Авторетрай»).
+
+- `pod_request_timeout_minutes`: int (дефолт 15, clamp 1..1440) — сколько всего
+  держим заявку и ретраим деплой, прежде чем перевести её в `timed_out`. Отсчёт
+  от `created_at`.
+- `pod_request_retry_interval_seconds`: int (дефолт 15, clamp 5..600) — пауза
+  между попытками деплоя. Читается воркером каждую итерацию, поэтому меняется
+  **без рестарта**.
+
+POST-валидация в `api_admin_settings_post` (тот же паттерн `max(min,min(max,int))`,
+что у idle_timeout). В UI — секция «🔁 Авторетрай заявки на под» (`loadAdminPanel`),
+поля `sReqTimeout` / `sReqInterval`, отправляются в `sbSave`.
+
 ## Pod Assignment (per-project quotas feature)
 
 Концепция:

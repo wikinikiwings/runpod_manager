@@ -159,6 +159,21 @@ ComfyUI которое мы не чиним, только отлавливаем
 
 ## Журнал предыдущих TODO/решений
 
+### ✅ DONE: Авторетрай заявки на под (2026-06-08)
+Когда `DeployOnDemand` падает из-за нехватки видеокарт, пользователь может
+оставить **заявку** — фоновый поток `pod_request_loop` повторяет деплой каждые
+`pod_request_retry_interval_seconds`, пока не получится или не выйдет
+`pod_request_timeout_minutes`. Новая таблица `pod_request` (переживает рестарт),
+типизированный `GpuUnavailableError` (без CLI-fallback на дефиците),
+`api_pods_post` отдаёт `{gpuUnavailable:true}` → фронт показывает диалог.
+Заявка резервирует слот квоты. Состояния:
+`pending → fulfilled | timed_out | failed | cancelled`. Карточки-плейсхолдеры в
+списке подов, кнопки «Отменить заявку»/«Закрыть». Две admin-настройки (таймаут /
+интервал). Спека/план: `docs/superpowers/{specs,plans}/2026-06-08-pod-launch-autoretry*.md`.
+Доки: `docs/graphql-deploy.md` (раздел «Авторетрай»), `docs/pod-lifecycle.md`,
+`docs/database.md`, `docs/admin-panel.md`, `docs/architecture.md`. 34/34 теста
+(`tests/test_pod_request.py`). Merge-коммит `cfbd661`.
+
 ### ✅ DONE: Per-project auto-delete offset (2026-04-21, post-ship)
 Админ теперь задаёт per-project offset в минутах относительно
 `auto_delete_time`. Эффективное время для каждого проекта =

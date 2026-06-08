@@ -15,6 +15,8 @@
 - Запуск подов идёт через **GraphQL-мутацию `DeployOnDemand`** — ту же, что
   использует веб-UI RunPod (потому что `runpodctl` ломается на новых GPU вроде
   Blackwell RTX PRO 4500).
+- Если все видеокарты заняты — пользователь оставляет **заявку на под**, и
+  фоновый воркер сам повторяет запуск, пока карта не освободится (авторетрай).
 - Один файл — `runpod_manager.py` (~2500 строк), одна БД — `runpod_manager.db`
   (SQLite), одни настройки — `admin_settings.json`.
 
@@ -27,7 +29,7 @@ runpod_manager/
 ├─ docker-compose.yml     # сервис, volume /app/data, port 5001
 ├─ .env                   # RUNPOD_API_KEY=... (gitignored)
 ├─ admin_settings.json    # runtime state: пароль, лимиты, расписания (gitignored)
-├─ runpod_manager.db      # SQLite, 4 таблицы (gitignored)
+├─ runpod_manager.db      # SQLite, 5 таблиц (gitignored)
 ├─ test_graphql.py        # диагностика: проверка GraphQL-листинга подов
 ├─ test_deploy.py         # диагностика: ручной вызов DeployOnDemand
 ├─ TODO.md                # текущие задачи между сессиями
@@ -42,7 +44,7 @@ runpod_manager/
 | [graphql-deploy.md](graphql-deploy.md) | **Самый важный.** Полная схема `DeployOnDemand`-мутации, переменные, headers, fallback на `runpodctl` |
 | [pod-lifecycle.md](pod-lifecycle.md) | Create → boot (порт 8189) → ready (порт 8188) → idle → delete, все health-check endpoints |
 | [admin-panel.md](admin-panel.md) | Аутентификация (user + admin), все `/api/admin/*`, настройки, hidden pods, pod window, scheduler |
-| [database.md](database.md) | DDL всех 4 таблиц SQLite, где каждая пишется/читается |
+| [database.md](database.md) | DDL всех 5 таблиц SQLite, где каждая пишется/читается |
 | [deployment.md](deployment.md) | Запуск через `docker compose`, env vars, volumes, откуда читается API key |
 | [recovery.md](recovery.md) | Плейбук на случай поломки: потерял БД / ключ / настройки / не стартует / списывает деньги |
 

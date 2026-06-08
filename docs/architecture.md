@@ -22,10 +22,11 @@ routes, inline frontend и `main`.
 | **GraphQL deploy** | 927–1038 | `DEPLOY_MUTATION` + `create_pod_via_graphql()` — primary path создания пода |
 | Pod operations | 1040–1188 | `create_pod()` (GraphQL → CLI fallback), `delete_pod()`, `start_pod()`, `next_name()`, `delete_all_pods()`, `check_idle_timeouts()` |
 | Scheduler | 1189–1209 | `scheduler_loop()` — daemon-тред, tick раз в 30s: daily auto-delete + idle timeout |
+| Авторетрай заявок | — | `process_pending_requests()` (один тик) + `pod_request_loop()` — второй daemon-тред, ретраит pending-заявки из таблицы `pod_request` каждые `pod_request_retry_interval_seconds`. CRUD-хелперы заявок + `GpuUnavailableError`/`is_gpu_unavailable_error`. См. `docs/graphql-deploy.md` |
 | API routes | 1212–1454 | `/api/projects`, `/api/user/*`, `/api/pods`, `/api/admin/*` |
 | Inline HTML SPA | 1459–2480 | `FRONTEND_HTML` — вся вёрстка, стили, JS в одной строке (~1000 строк) |
 | Root + favicon | 2483–2491 | `/` возвращает `FRONTEND_HTML`, `/favicon.ico` → 204 |
-| `main` | 2493–2512 | argparse, logging, `detect_cli()`, `init_db()`, старт scheduler-треда, `app.run()` |
+| `main` | 2493–2512 | argparse, logging, `detect_cli()`, `init_db()`, старт scheduler-треда + `pod_request_loop`-треда, `app.run()` |
 
 ## Глобальные константы
 
@@ -117,8 +118,9 @@ PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
    `migrate_to_pod_assignment()` one-shot. Миграция идемпотентна: если `pod_hidden`
    не существует (уже мигрировано), это no-op; иначе копирует старые данные в
    `pod_assignment`, back-fills из `pod_actions`, и удаляет `pod_hidden`.
-6. Стартует scheduler-тред: `threading.Thread(target=scheduler_loop, daemon=True).start()`
-   (`daemon=True` → умрёт вместе с Flask без явного shutdown).
+6. Стартует **два** daemon-треда: `scheduler_loop` (auto-delete + idle timeout) и
+   `pod_request_loop` (авторетрай заявок на под). Оба `daemon=True` → умрут
+   вместе с Flask без явного shutdown.
 7. `app.run(host=..., port=..., debug=...)`.
 
 Если на любом шаге ошибка — логируется и продолжаем (например, без API key

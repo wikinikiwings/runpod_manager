@@ -48,6 +48,22 @@ CREATE TABLE IF NOT EXISTS pod_assignment (
     assigned_at TEXT NOT NULL,
     assigned_by TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS pod_request (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    pod_name            TEXT NOT NULL,
+    assigned_project    TEXT,
+    counts_toward_quota INTEGER NOT NULL DEFAULT 1,
+    creation_source     TEXT NOT NULL DEFAULT 'user',
+    requested_by        TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'pending',
+    created_at          TEXT NOT NULL,
+    last_attempt_at     TEXT,
+    last_error          TEXT,
+    pod_id              TEXT,
+    finished_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pr_status ON pod_request(status);
 ```
 
 ## Таблицы по порядку
@@ -186,6 +202,38 @@ Steps:
 Covered by `tests/test_migration.py` (stdlib unittest; runs via
 `python -m unittest tests.test_migration`).
 
+### `pod_request` — заявки на под (авторетрай)
+
+DB-backed-очередь для фичи авторетрая: если `create` падает из-за нехватки
+видеокарт, заявка кладётся сюда и переживает рестарт. Фоновый поток
+`pod_request_loop` → `process_pending_requests()` повторяет деплой, пока не успех
+или таймаут. Полное описание потока — `docs/graphql-deploy.md` (раздел
+«Авторетрай»), состояния — `docs/pod-lifecycle.md`.
+
+Колонки:
+- `id` — autoincrement PK (в отличие от остальных таблиц — заявка не привязана к
+  `pod_id`, пока под не создан).
+- `pod_name` — зарезервированное имя будущего пода (`next_name()` учитывает
+  pending-заявки, чтобы не было коллизий).
+- `assigned_project` / `counts_toward_quota` / `creation_source` — переносятся в
+  `pod_assignment` при успехе (та же семантика, что у прямого create).
+- `requested_by` — никнейм заказчика.
+- `status` — `pending | fulfilled | timed_out | failed | cancelled`. Только
+  `pending` обрабатывается воркером; `pending/timed_out/failed` рендерятся
+  карточками (`fulfilled/cancelled` — нет).
+- `created_at` — отсчёт таймаута (`pod_request_timeout_minutes`).
+- `last_attempt_at` / `last_error` — обновляются на каждой ретрай-попытке;
+  `last_error` показывается в карточке `failed`.
+- `pod_id` — заполняется id созданного пода при `fulfilled`.
+- `finished_at` — момент перехода в любое терминальное состояние.
+
+Индекс `idx_pr_status` — воркер фильтрует по `status='pending'` каждую итерацию.
+
+**Пишется/читается**: CRUD-хелперы `create_pod_request`, `list_pending_requests`,
+`list_visible_requests`, `get_pod_request`, `update_pod_request`,
+`delete_pod_request`, `pending_request_names`, `count_pending_quota`. Покрыто
+`tests/test_pod_request.py`.
+
 ## Бэкап
 
 БД и настройки выживают рестарт контейнера благодаря volume `runpod-data:/app/data`
@@ -218,6 +266,9 @@ docker compose restart runpod-manager
 - `pod_assignment` — все assign-данные потеряются. Все поды станут
   unassigned (видны только админу). Unassigned-поды не считаются в квоты.
   Нужно будет заново назначить проекты через `/assign` для каждого пода.
+- `pod_request` — потеряются незавершённые заявки на под. Авторетрай для них
+  остановится; пользователю надо будет оставить заявку заново. Уже созданные
+  (fulfilled) поды не затрагиваются.
 
 Ни одна из этих потерь не ломает работу с подами. Поэтому БД считается
 «мягким» state-ом: важна для UX и аудита, но не для управления подами.
