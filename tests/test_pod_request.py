@@ -108,6 +108,40 @@ class GpuUnavailableDetectTest(unittest.TestCase):
         self.assertTrue(issubclass(rm.GpuUnavailableError, RuntimeError))
 
 
+class ApiPodsPostSignalTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._orig_db_path = rm.DB_PATH
+        rm.DB_PATH = Path(self.tmp.name)
+        rm.init_db()
+        rm.app.config["TESTING"] = True
+        self.client = rm.app.test_client()
+
+    def tearDown(self):
+        rm.DB_PATH = self._orig_db_path
+        try:
+            os.unlink(self.tmp.name)
+        except OSError:
+            pass
+
+    def _login(self):
+        with self.client.session_transaction() as sess:
+            sess["user_nickname"] = "alice"
+            sess["user_project"] = "CV"
+
+    def test_gpu_unavailable_returns_signal_not_500(self):
+        self._login()
+        with mock.patch.object(rm, "create_pod",
+                               side_effect=rm.GpuUnavailableError("GraphQL: no resources")), \
+             mock.patch.object(rm, "list_pods", return_value=[]):
+            r = self.client.post("/api/pods", json={})
+        self.assertEqual(r.status_code, 200)
+        body = r.get_json()
+        self.assertFalse(body["ok"])
+        self.assertTrue(body["gpuUnavailable"])
+
+
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):
         self._orig_key = rm._api_key

@@ -1730,6 +1730,10 @@ def api_pods_post():
         log_action(nick, proj, "create", name, pid)
         return jsonify({"ok":True,"name":name,
                         "comfyUrl":f"https://{pid}-{PRESET['comfy_port']}.proxy.runpod.net" if pid else None})
+    except GpuUnavailableError as e:
+        # Not a hard error — the GPU may free up. Signal the frontend to offer
+        # the user a "leave a request?" dialog instead of a scary red toast.
+        return jsonify({"ok": False, "gpuUnavailable": True, "error": str(e)}), 200
     except Exception as e:
         return jsonify({"ok":False,"error":str(e)}),500
 
