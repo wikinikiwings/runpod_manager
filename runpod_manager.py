@@ -89,6 +89,10 @@ DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
     # Prevents double-firing within the same UTC day. Populated at runtime.
     "project_autodelete_last_run":{},
     "idle_timeout_enabled":True,"idle_timeout_minutes":120,
+    # Auto-retry "заявка на под": total retry window (minutes) and interval
+    # between deploy attempts (seconds). See pod_request_loop.
+    "pod_request_timeout_minutes":15,
+    "pod_request_retry_interval_seconds":15,
     # Pod creation restriction window (strategy A: only blocks NEW pods).
     # Times are UTC 'HH:MM'. 'from' and 'until' define the period when creation is
     # FORBIDDEN (typically night hours). Supports overnight spans (e.g. 22:00 -> 08:00).
@@ -1644,6 +1648,21 @@ def scheduler_loop():
         except Exception as e:
             log.error(f"scheduler_loop: {e}")
         _time.sleep(30)
+
+def pod_request_loop():
+    """Daemon loop driving auto-retry of pending pod requests. Sleeps the
+    admin-configured interval (re-read each iteration so changes apply without a
+    restart), clamped to a sane minimum."""
+    while True:
+        try:
+            process_pending_requests()
+        except Exception as e:
+            log.error(f"pod_request_loop: {e}")
+        try:
+            interval = max(5, int(get_settings().get("pod_request_retry_interval_seconds", 15)))
+        except (TypeError, ValueError):
+            interval = 15
+        _time.sleep(interval)
 
 # ============================================================
 # Routes
@@ -3215,4 +3234,5 @@ if __name__=="__main__":
     else: print("  ⏱  Idle timeout: off")
     print(f"\n  🌍 http://localhost:{a.port}\n")
     threading.Thread(target=scheduler_loop, daemon=True).start()
+    threading.Thread(target=pod_request_loop, daemon=True).start()
     app.run(host=a.host,port=a.port,debug=a.debug)

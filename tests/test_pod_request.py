@@ -274,6 +274,13 @@ class WorkerTickTest(unittest.TestCase):
             delete_pod.assert_called_once_with("p_orphan")
         self.assertEqual(rm.get_pod_request(rid)["status"], "cancelled")
 
+    def test_settings_defaults_present(self):
+        self.assertEqual(rm.DEFAULT_SETTINGS["pod_request_timeout_minutes"], 15)
+        self.assertEqual(rm.DEFAULT_SETTINGS["pod_request_retry_interval_seconds"], 15)
+
+    def test_pod_request_loop_callable(self):
+        self.assertTrue(callable(rm.pod_request_loop))
+
 
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):
