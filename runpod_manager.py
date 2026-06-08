@@ -1709,10 +1709,10 @@ def api_pods_post():
             src = 'user'
 
         pods = list_pods()
-        # Per-project pod naming: ap is either a project key or None (unassigned).
-        # next_name scans only the pods with the matching prefix so each project
-        # gets its own 1,2,3,... counter.
-        name = next_name(pods, ap)
+        # Reserve a name against BOTH real pods and pending requests so a direct
+        # create and a queued "заявка" never collide on a name.
+        reserved = pods + [{"name": n} for n in pending_request_names()]
+        name = next_name(reserved, ap)
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
         result = create_pod(name, bypass_window=admin)
         pid = result.get("id", "") if isinstance(result, dict) else ""

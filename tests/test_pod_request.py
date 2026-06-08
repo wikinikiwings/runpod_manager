@@ -79,6 +79,13 @@ class PodRequestDBTest(unittest.TestCase):
         self.assertIsNotNone(cur.fetchone())
         db.close()
 
+    def test_next_name_skips_pending_request_names(self):
+        # One real pod named cv_pod_1, plus a pending request for cv_pod_2.
+        real_pods = [{"name": "cv_pod_1"}]
+        rm.create_pod_request("cv_pod_2", "CV", True, "user", "alice")
+        combined = real_pods + [{"name": n} for n in rm.pending_request_names()]
+        self.assertEqual(rm.next_name(combined, "CV"), "cv_pod_3")
+
 
 class GpuUnavailableDetectTest(unittest.TestCase):
     def test_matches_runpod_phrases(self):
