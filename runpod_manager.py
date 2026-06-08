@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""RunPod Manager v6.4 — admin-only hidden pods (hide from regular users)"""
+"""RunPod Manager v6.6 — per-project quotas + pod-launch auto-retry (заявка на под)"""
 
 import subprocess, json, re, os, argparse, logging, shutil, secrets, threading, sqlite3
 import time as _time, urllib.request, urllib.error
 from concurrent.futures import ThreadPoolExecutor
+from functools import wraps
 from pathlib import Path
-from datetime import datetime, date, timedelta, timezone
-from flask import Flask, jsonify, Response, request, session, redirect, g
+from datetime import datetime, timezone
+from flask import Flask, jsonify, Response, request, session, g
 
 # ============================================================
 # Time helpers — ALL timestamps in this app are UTC ISO 8601 with 'Z' suffix.
@@ -733,14 +734,14 @@ def load_settings():
     with _settings_lock:
         if SETTINGS_FILE.exists():
             try: return {**DEFAULT_SETTINGS, **json.loads(SETTINGS_FILE.read_text("utf-8"))}
-            except: pass
+            except Exception: pass
         _save_nl(DEFAULT_SETTINGS); return dict(DEFAULT_SETTINGS)
 def save_settings(s):
     with _settings_lock: _save_nl(s)
 def _save_nl(s):
     SETTINGS_FILE.write_text(json.dumps(s,indent=2,ensure_ascii=False),encoding="utf-8")
 def get_settings(): return load_settings()
-def is_admin(): return session.get("admin")==True
+def is_admin(): return session.get("admin") is True
 
 # ============================================================
 # Pod creation window check
@@ -837,7 +838,6 @@ def check_pod_window():
     return result
 
 def require_admin(f):
-    from functools import wraps
     @wraps(f)
     def w(*a,**kw):
         if not is_admin(): return (jsonify({"ok":False,"error":"Unauthorized"}),401)
@@ -906,7 +906,6 @@ def require_user(f):
     entirely because browsers never trigger basic auth re-prompts on 403.
     The frontend's global handler in api() treats both 401 and 403 the same way:
     show the in-app login screen."""
-    from functools import wraps
     @wraps(f)
     def w(*a, **kw):
         nick, proj = get_session_user()
@@ -928,7 +927,7 @@ def resolve_api_key(cli_arg=""):
             if cp.exists():
                 m = re.search(r'api[Kk]ey\s*=\s*["\']?([^\s"\']+)', cp.read_text(encoding="utf-8"))
                 if m: return m.group(1).strip()
-        except: pass
+        except Exception: pass
     return ""
 def http_request(url, data=None, headers=None):
     hdrs = {"Content-Type":"application/json","User-Agent":"RunPod-Manager/6.0"}
@@ -947,14 +946,14 @@ def detect_cli():
     try:
         r = subprocess.run([_cli_path,"pod","list","--all","--output=json"], capture_output=True, text=True, timeout=15)
         if r.returncode==0 and (not r.stdout.strip() or r.stdout.strip()[0] in "[{"): _cli_is_new=True; print(f"  ✓  CLI: {which} (new)"); return
-    except: pass
+    except Exception: pass
     _cli_is_new=False; print(f"  ✓  CLI: {which} (legacy)")
 def run_cmd(args, timeout=45):
     try:
         r = subprocess.run(args, capture_output=True, text=True, timeout=timeout); s = r.stdout.strip()
         if s:
             try: return {"ok":True,"data":json.loads(s)}
-            except: return {"ok":True,"data":s}
+            except Exception: return {"ok":True,"data":s}
         if r.returncode!=0: return {"ok":False,"error":r.stderr.strip() or f"exit {r.returncode}"}
         return {"ok":True,"data":None}
     except Exception as e: return {"ok":False,"error":str(e)}
@@ -1020,18 +1019,18 @@ def try_gql_bearer():
         resp = http_request("https://api.runpod.io/graphql", data={"query":PODS_GQL}, headers={"Authorization":f"Bearer {_api_key}"})
         if resp.get("errors"): raise Exception("")
         return [enrich_gql(p) for p in resp.get("data",{}).get("myself",{}).get("pods",[])]
-    except: return None
+    except Exception: return None
 def try_gql_qp():
     try:
         resp = http_request(f"https://api.runpod.io/graphql?api_key={_api_key}", data={"query":PODS_GQL})
         if resp.get("errors"): raise Exception("")
         return [enrich_gql(p) for p in resp.get("data",{}).get("myself",{}).get("pods",[])]
-    except: return None
+    except Exception: return None
 def try_rest():
     try:
         data = http_request("https://rest.runpod.io/v1/pods", headers={"Authorization":f"Bearer {_api_key}"})
         return [enrich_rest(p) for p in (data if isinstance(data,list) else [])]
-    except: return None
+    except Exception: return None
 def try_cli():
     if _cli_is_new:
         res = run_cmd([_cli_path,"pod","list","--all","--output=json"])
@@ -1266,7 +1265,6 @@ DEPLOY_MUTATION = """mutation DeployOnDemand($input: PodFindAndDeployOnDemandInp
   podFindAndDeployOnDemand(input: $input) {
     id
     imageName
-    machineId
   }
 }"""
 
@@ -1357,7 +1355,6 @@ def create_pod_via_graphql(name):
         "id": pod["id"],
         "name": name,
         "imageName": pod.get("imageName", ""),
-        "machineId": pod.get("machineId", ""),
     }
 
 # ============================================================
@@ -1999,7 +1996,7 @@ def api_admin_settings_post():
     if "idle_timeout_enabled" in data: s["idle_timeout_enabled"]=bool(data["idle_timeout_enabled"])
     if "idle_timeout_minutes" in data:
         try: s["idle_timeout_minutes"]=max(1,min(1440,int(data["idle_timeout_minutes"])))
-        except: pass
+        except (TypeError, ValueError): pass
     # Pod creation window settings
     if "pod_window_enabled" in data: s["pod_window_enabled"]=bool(data["pod_window_enabled"])
     if "pod_window_from" in data:
@@ -2011,10 +2008,10 @@ def api_admin_settings_post():
     # Auto-retry "заявка на под" tuning
     if "pod_request_timeout_minutes" in data:
         try: s["pod_request_timeout_minutes"]=max(1,min(1440,int(data["pod_request_timeout_minutes"])))
-        except: pass
+        except (TypeError, ValueError): pass
     if "pod_request_retry_interval_seconds" in data:
         try: s["pod_request_retry_interval_seconds"]=max(5,min(600,int(data["pod_request_retry_interval_seconds"])))
-        except: pass
+        except (TypeError, ValueError): pass
     save_settings(s); return jsonify({"ok":True})
 
 @app.route("/api/admin/delete-all", methods=["POST"])
@@ -3268,7 +3265,7 @@ if __name__=="__main__":
     pa=argparse.ArgumentParser(); pa.add_argument("--host",default="0.0.0.0"); pa.add_argument("--port",type=int,default=5001); pa.add_argument("--api-key",default=""); pa.add_argument("--debug",action="store_true")
     a=pa.parse_args()
     logging.basicConfig(level=logging.DEBUG if a.debug else logging.INFO,format="%(asctime)s [%(levelname)s] %(message)s",datefmt="%H:%M:%S")
-    print("\n  RunPod Manager v6.4\n")
+    print("\n  RunPod Manager v6.6\n")
     detect_cli()
     _api_key=resolve_api_key(a.api_key)
     if _api_key: print(f"  ✓  Key: {_api_key[:8]}...")
