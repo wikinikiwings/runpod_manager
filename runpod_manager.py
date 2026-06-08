@@ -2461,6 +2461,11 @@ async function loadAdminPanel(){
         '<div class="fr"><label>Timeout (minutes)</label><input type="number" id="sIdleMin" min="1" max="1440" value="'+(s.idle_timeout_minutes||120)+'"></div>'+
         '<div class="sb-dim">Timer starts when ComfyUI becomes ready. Activity is detected from ComfyUI prompt log.</div>'+
       '</div>'+
+      '<div class="sb-section"><h3>🔁 Авторетрай заявки на под</h3>'+
+        '<div class="fr"><label>Таймаут заявки (мин)</label><input type="number" id="sReqTimeout" min="1" max="1440" value="'+(s.pod_request_timeout_minutes||15)+'"></div>'+
+        '<div class="fr"><label>Интервал ретрая (сек)</label><input type="number" id="sReqInterval" min="5" max="600" value="'+(s.pod_request_retry_interval_seconds||15)+'"></div>'+
+        '<div class="sb-dim">Когда видеокарта занята, пользователь может оставить заявку — менеджер повторяет запуск каждые «интервал» секунд, пока не получится или не выйдет «таймаут».</div>'+
+      '</div>'+
       '<div class="sb-section"><h3>⏰ Auto-delete (daily)</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sSchedOn" '+(s.auto_delete_enabled?'checked':'')+
         '><span class="sw"></span> Daily auto-delete</label></div>'+
@@ -2632,6 +2637,8 @@ async function sbSave(){
     project_autodelete_offset_minutes:offsets,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
     idle_timeout_enabled:$('sIdleOn').checked,idle_timeout_minutes:parseInt($('sIdleMin').value)||120,
+    pod_request_timeout_minutes:parseInt($('sReqTimeout').value)||15,
+    pod_request_retry_interval_seconds:parseInt($('sReqInterval').value)||15,
     pod_window_enabled:$('sWinOn').checked,
     pod_window_from:localTimeToUtc($('sWinFrom').value),
     pod_window_until:localTimeToUtc($('sWinUntil').value),
