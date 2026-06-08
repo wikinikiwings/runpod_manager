@@ -164,6 +164,28 @@ class ApiPodsPostSignalTest(unittest.TestCase):
         self.assertFalse(r.get_json()["ok"])
         self.assertEqual(rm.list_pending_requests(), [])
 
+    def test_cancel_pending_sets_cancelled(self):
+        self._login()
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        r = self.client.delete(f"/api/pod-requests/{rid}")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(rm.get_pod_request(rid)["status"], "cancelled")
+
+    def test_close_terminal_deletes_row(self):
+        self._login()
+        rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        rm.update_pod_request(rid, status="timed_out")
+        r = self.client.delete(f"/api/pod-requests/{rid}")
+        self.assertEqual(r.status_code, 200)
+        self.assertIsNone(rm.get_pod_request(rid))
+
+    def test_cannot_cancel_other_projects_request(self):
+        self._login()  # alice / CV
+        rid = rm.create_pod_request("dv_pod_1", "DV", True, "user", "bob")
+        r = self.client.delete(f"/api/pod-requests/{rid}")
+        self.assertEqual(r.status_code, 404)
+        self.assertEqual(rm.get_pod_request(rid)["status"], "pending")
+
 
 class CreatePodErrorRoutingTest(unittest.TestCase):
     def setUp(self):

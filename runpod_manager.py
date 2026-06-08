@@ -1786,6 +1786,29 @@ def api_pod_requests_post():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+@app.route("/api/pod-requests/<int:req_id>", methods=["DELETE"])
+@require_user
+def api_pod_requests_delete(req_id):
+    """Cancel a pending request, or close (dismiss) a terminal one.
+    Project-scoped: a non-admin can only touch their own project's requests;
+    others return 404 to keep existence private (mirrors api_del)."""
+    try:
+        nick, proj = g.current_user
+        req = get_pod_request(req_id)
+        if req is None:
+            return jsonify({"ok": False, "error": "Request not found"}), 404
+        if not is_admin() and req["assigned_project"] != proj:
+            return jsonify({"ok": False, "error": "Request not found"}), 404
+        if req["status"] == "pending":
+            update_pod_request(req_id, status="cancelled", finished_at=now_iso())
+            log_action(nick, proj, "request_cancel", req["pod_name"], "")
+        else:
+            # timed_out / failed → 'Закрыть' just removes the card.
+            delete_pod_request(req_id)
+        return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.route("/api/pods/<pid>", methods=["DELETE"])
 @require_user
 def api_del(pid):
