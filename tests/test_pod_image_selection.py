@@ -92,3 +92,37 @@ class DeployThreadingTest(unittest.TestCase):
 
     def test_defaults_to_preset_template(self):
         self.assertEqual(self._run_deploy(), rm.PRESET["template_id"])
+
+
+class AutoRetryTemplateTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        self.tmp.close()
+        self._orig_db_path = rm.DB_PATH
+        rm.DB_PATH = Path(self.tmp.name)
+        rm.init_db()
+
+    def tearDown(self):
+        rm.DB_PATH = self._orig_db_path
+        try:
+            os.unlink(self.tmp.name)
+        except OSError:
+            pass
+
+    def test_worker_deploys_with_project_template(self):
+        rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
+        s = _settings(project_pod_image={"CV": "cvtpl00001"},
+                      pod_request_timeout_minutes=15)
+        captured = {}
+
+        def fake_deploy(name, template_id=None):
+            captured["tid"] = template_id
+            return {"id": "p1"}
+
+        with mock.patch.object(rm, "get_settings", return_value=s), \
+             mock.patch.object(rm, "create_pod_via_graphql", side_effect=fake_deploy), \
+             mock.patch.object(rm, "upsert_pod_assignment"), \
+             mock.patch.object(rm, "log_action"):
+            rm.process_pending_requests()
+
+        self.assertEqual(captured["tid"], "cvtpl00001")

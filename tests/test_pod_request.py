@@ -261,7 +261,7 @@ class WorkerTickTest(unittest.TestCase):
     def test_cancelled_mid_deploy_deletes_pod(self):
         rid = rm.create_pod_request("cv_pod_1", "CV", True, "user", "alice")
 
-        def deploy_then_cancel(name):
+        def deploy_then_cancel(name, **kwargs):
             # Simulate the user cancelling while the deploy is in flight.
             rm.update_pod_request(rid, status="cancelled")
             return {"id": "p_orphan", "name": name}

@@ -1579,7 +1579,8 @@ def process_pending_requests():
 
             # 2) Attempt the deploy (quota/window were reserved at creation).
             try:
-                result = create_pod_via_graphql(req["pod_name"])
+                tid = resolve_template_id(req["assigned_project"])
+                result = create_pod_via_graphql(req["pod_name"], template_id=tid)
             except GpuUnavailableError as e:
                 update_pod_request(rid, last_attempt_at=now_iso(), last_error=str(e))
                 continue
@@ -1819,7 +1820,8 @@ def api_pods_post():
         reserved = pods + [{"name": n} for n in pending_request_names()]
         name = next_name(reserved, ap)
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
-        result = create_pod(name, bypass_window=admin)
+        result = create_pod(name, bypass_window=admin,
+                            template_id=resolve_template_id(ap))
         pid = result.get("id", "") if isinstance(result, dict) else ""
         # Write the assignment row BEFORE logging the create action. If the upsert
         # raises, the pod exists on RunPod but has no assignment — surface the
