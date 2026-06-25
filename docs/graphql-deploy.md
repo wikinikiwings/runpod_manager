@@ -55,12 +55,23 @@ mutation DeployOnDemand($input: PodFindAndDeployOnDemandInput) {
 | `ports` | `ports` | `"8188/http,8888/http,8686/http,8189/http"` |
 | `startJupyter` | `start_jupyter` | `True` |
 | `startSsh` | `start_ssh` | `True` |
-| `templateId` | `template_id` | `"i3j2sm66q8"` |
+| `templateId` | `resolve_template_id(project)` — выбранный для проекта образ из каталога настроек; fallback `PRESET["template_id"]` | `"i3j2sm66q8"` (дефолт) |
 | `volumeInGb` | `volume_in_gb` | `0` |
 | `volumeKey` | — (литерал) | `None` |
 
 **Не забыть**: `templateId` уже содержит `image` и `env` — они НЕ передаются
 отдельно в GraphQL, в отличие от CLI-пути.
+
+**Per-project выбор образа.** `templateId` в мутации берётся не напрямую из
+`PRESET`, а через `resolve_template_id(project)` (Settings-секция
+`runpod_manager.py`): приоритет — явный выбор проекта из каталога образов
+→ глобальный дефолт → `PRESET["template_id"]` как страховка. Каталог
+образов и per-project назначения редактируются в блоке «🖼 Образы подов»
+в админ-панели (`docs/admin-panel.md`). CLI-fallback (`create_pod`) также
+получает выбранный `template_id` через `--template-id`/`--templateId`.
+Авторетрай (`process_pending_requests`) перерезолвит образ на каждой попытке:
+если админ сменил образ проекта, пока заявка висит, следующая попытка пойдёт
+на новом образе.
 
 ## Запрос целиком
 

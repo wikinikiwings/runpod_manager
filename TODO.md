@@ -159,6 +159,16 @@ ComfyUI которое мы не чиним, только отлавливаем
 
 ## Журнал предыдущих TODO/решений
 
+### ✅ DONE: Per-project pod image selection (2026-06-25)
+Админ ведёт каталог образов `{label → template_id}` и назначает образ каждому
+проекту (по аналогии с project_quotas). Деплой резолвит template_id из проекта
+(`resolve_template_id`) и кладёт в `DeployOnDemand`/CLI `--template-id`; авторетрай
+перерезолвит на каждой попытке. Один глобальный дефолт, засев текущим i3j2sm66q8
+(поведение неизменно до переключения). Три ключа настроек + валидация
+(`compute_image_settings_update`), новый блок «🖼 Образы подов» в админке.
+Спека/план: `docs/superpowers/{specs,plans}/2026-06-25-pod-image-selection*.md`.
+Тесты: `tests/test_pod_image_selection.py`.
+
 ### ✅ DONE: Авторетрай заявки на под (2026-06-08)
 Когда `DeployOnDemand` падает из-за нехватки видеокарт, пользователь может
 оставить **заявку** — фоновый поток `pod_request_loop` повторяет деплой каждые
