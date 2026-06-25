@@ -756,7 +756,8 @@ def resolve_template_id(project):
     is empty/broken."""
     s = get_settings()
     catalog = s.get("pod_image_catalog") or []
-    valid = {e.get("template_id") for e in catalog if isinstance(e, dict)}
+    valid = {e["template_id"] for e in catalog
+             if isinstance(e, dict) and e.get("template_id")}
     tid = (s.get("project_pod_image") or {}).get(project)
     if tid in valid:
         return tid

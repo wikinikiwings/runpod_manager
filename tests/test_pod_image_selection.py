@@ -54,3 +54,10 @@ class ResolveTemplateTest(unittest.TestCase):
         s = _settings(pod_image_catalog=[], default_pod_image="")
         with mock.patch.object(rm, "get_settings", return_value=s):
             self.assertEqual(rm.resolve_template_id("CV"), rm.PRESET["template_id"])
+
+    def test_catalog_entry_missing_template_id_falls_back_to_preset(self):
+        # A malformed catalog entry (no template_id) must not let a project
+        # with no choice (tid=None) match a None in `valid` and return None.
+        s = _settings(pod_image_catalog=[{"label": "broken"}], default_pod_image="")
+        with mock.patch.object(rm, "get_settings", return_value=s):
+            self.assertEqual(rm.resolve_template_id("CV"), rm.PRESET["template_id"])
