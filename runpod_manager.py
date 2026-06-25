@@ -1291,7 +1291,7 @@ DEPLOY_MUTATION = """mutation DeployOnDemand($input: PodFindAndDeployOnDemandInp
   }
 }"""
 
-def create_pod_via_graphql(name):
+def create_pod_via_graphql(name, template_id=None):
     """Create a pod via the same GraphQL mutation that the RunPod UI uses.
     Returns {id, name, imageName} on success, raises RuntimeError on any failure.
     Caller (create_pod) is responsible for falling back to CLI if this fails."""
@@ -1313,7 +1313,7 @@ def create_pod_via_graphql(name):
             "ports": PRESET["ports"],
             "startJupyter": PRESET["start_jupyter"],
             "startSsh": PRESET["start_ssh"],
-            "templateId": PRESET["template_id"],
+            "templateId": template_id or PRESET["template_id"],
             "volumeInGb": PRESET["volume_in_gb"],
             "volumeKey": None,
         }
@@ -1383,7 +1383,7 @@ def create_pod_via_graphql(name):
 # ============================================================
 # Pod operations
 # ============================================================
-def create_pod(name, bypass_window=False):
+def create_pod(name, bypass_window=False, template_id=None):
     s = get_settings()
     # Check pod creation restriction window unless caller explicitly bypasses (admin).
     # Strategy A: restriction only blocks NEW pods, existing pods keep running regardless.
@@ -1412,7 +1412,7 @@ def create_pod(name, bypass_window=False):
     if _api_key:
         try:
             log.info(f"Creating pod {name!r} via GraphQL DeployOnDemand mutation")
-            return create_pod_via_graphql(name)
+            return create_pod_via_graphql(name, template_id=template_id)
         except GpuUnavailableError:
             # No GPU available right now. The CLI path also fails on scarcity,
             # so don't bother — surface the retryable error to the caller.
@@ -1429,7 +1429,8 @@ def create_pod(name, bypass_window=False):
              "--gpu-count",str(PRESET["gpu_count"]),"--name",name,"--image",PRESET["image"],
              "--container-disk-in-gb",str(PRESET["container_disk_in_gb"]),
              "--volume-mount-path",PRESET["volume_mount_path"],"--volume-in-gb",str(PRESET["volume_in_gb"])]
-        if PRESET.get("template_id"): cmd+=["--template-id",PRESET["template_id"]]
+        tid = template_id or PRESET.get("template_id")
+        if tid: cmd+=["--template-id",tid]
         if PRESET.get("network_volume_id"): cmd+=["--network-volume-id",PRESET["network_volume_id"]]
         if PRESET.get("env"): cmd+=["--env",json.dumps(PRESET["env"])]
     else:
@@ -1437,7 +1438,8 @@ def create_pod(name, bypass_window=False):
              "--gpuType",PRESET["gpu_id"],"--gpuCount",str(PRESET["gpu_count"]),"--name",name,
              "--imageName",PRESET["image"],"--containerDiskSize",str(PRESET["container_disk_in_gb"]),
              "--volumePath",PRESET["volume_mount_path"],"--volumeSize",str(PRESET["volume_in_gb"])]
-        if PRESET.get("template_id"): cmd+=["--templateId",PRESET["template_id"]]
+        tid = template_id or PRESET.get("template_id")
+        if tid: cmd+=["--templateId",tid]
         if PRESET.get("network_volume_id"): cmd+=["--networkVolumeId",PRESET["network_volume_id"]]
         if PRESET.get("env"):
             for k,v in PRESET["env"].items(): cmd+=["--env",f"{k}={v}"]

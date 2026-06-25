@@ -61,3 +61,34 @@ class ResolveTemplateTest(unittest.TestCase):
         s = _settings(pod_image_catalog=[{"label": "broken"}], default_pod_image="")
         with mock.patch.object(rm, "get_settings", return_value=s):
             self.assertEqual(rm.resolve_template_id("CV"), rm.PRESET["template_id"])
+
+
+class DeployThreadingTest(unittest.TestCase):
+    class _FakeResp:
+        def __init__(self, payload):
+            self._b = json.dumps(payload).encode("utf-8")
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+        def read(self):
+            return self._b
+
+    def _run_deploy(self, **kwargs):
+        captured = {}
+        ok = {"data": {"podFindAndDeployOnDemand": {"id": "p1", "imageName": "img"}}}
+
+        def fake_urlopen(req, timeout=0):
+            captured["body"] = json.loads(req.data.decode("utf-8"))
+            return self._FakeResp(ok)
+
+        with mock.patch.object(rm, "_api_key", "k"), \
+             mock.patch.object(rm.urllib.request, "urlopen", fake_urlopen):
+            rm.create_pod_via_graphql("cv_pod_1", **kwargs)
+        return captured["body"]["variables"]["input"]["templateId"]
+
+    def test_passed_template_id_used(self):
+        self.assertEqual(self._run_deploy(template_id="tpl_X00001"), "tpl_X00001")
+
+    def test_defaults_to_preset_template(self):
+        self.assertEqual(self._run_deploy(), rm.PRESET["template_id"])
