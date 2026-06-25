@@ -48,6 +48,7 @@ runpod_manager/
 | [database.md](database.md) | DDL всех 5 таблиц SQLite, где каждая пишется/читается |
 | [deployment.md](deployment.md) | Запуск через `docker compose`, env vars, volumes, откуда читается API key |
 | [recovery.md](recovery.md) | Плейбук на случай поломки: потерял БД / ключ / настройки / не стартует / списывает деньги |
+| [ui-conventions.md](ui-conventions.md) | Соглашения по inline-фронтенду (`FRONTEND_HTML`): темизация полей ввода (всегда указывать `type`), структура `.fr`/`label`/`.toggle`, экранирование ввода |
 
 ## Быстрый старт (если уже есть `.env` с ключом)
 
