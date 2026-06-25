@@ -79,6 +79,14 @@ SETTINGS_FILE = DATA_DIR / "admin_settings.json"
 DB_PATH = DATA_DIR / "runpod_manager.db"
 DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
     "project_quotas":{p: DEFAULT_PROJECT_QUOTA for p in PROJECTS},
+    # Per-project pod image selection. Catalog of {label, template_id} the admin
+    # edits in the panel; default_pod_image is the template_id used for projects
+    # with no explicit choice, unassigned pods, and admin pods. project_pod_image
+    # maps project -> template_id (missing key = use default). Seeded with the
+    # current template so behavior is unchanged until the admin switches a project.
+    "pod_image_catalog":[{"label":"Текущий (comfy_runpod)","template_id":"i3j2sm66q8"}],
+    "default_pod_image":"i3j2sm66q8",
+    "project_pod_image":{},
     "auto_delete_enabled":False,"auto_delete_time":"21:00",
     "auto_delete_last_run":"","auto_delete_last_log":"",
     # Per-project auto-delete offset in MINUTES. For each project, the effective
@@ -741,6 +749,59 @@ def save_settings(s):
 def _save_nl(s):
     SETTINGS_FILE.write_text(json.dumps(s,indent=2,ensure_ascii=False),encoding="utf-8")
 def get_settings(): return load_settings()
+def resolve_template_id(project):
+    """RunPod template_id to deploy for a pod belonging to `project` (may be None
+    for unassigned/admin pods). Priority: the project's catalog choice if it still
+    exists, then the global default, then PRESET as a last resort if the catalog
+    is empty/broken."""
+    s = get_settings()
+    catalog = s.get("pod_image_catalog") or []
+    valid = {e["template_id"] for e in catalog
+             if isinstance(e, dict) and e.get("template_id")}
+    tid = (s.get("project_pod_image") or {}).get(project)
+    if tid in valid:
+        return tid
+    if s.get("default_pod_image") in valid:
+        return s["default_pod_image"]
+    return PRESET["template_id"]
+def compute_image_settings_update(data, s):
+    """Pure validation for the pod-image settings POST. Given the request body
+    `data` and current settings `s`, return a dict containing only the validated
+    keys among {pod_image_catalog, default_pod_image, project_pod_image} that were
+    present in `data`. Catalog never becomes empty (invalid/empty submission is
+    dropped). Stale leftovers are tolerated by resolve_template_id at deploy time."""
+    out = {}
+    new_catalog = s.get("pod_image_catalog") or []
+    if isinstance(data.get("pod_image_catalog"), list):
+        seen = set(); cleaned = []
+        for e in data["pod_image_catalog"]:
+            if not isinstance(e, dict):
+                continue
+            label = str(e.get("label", "")).strip()[:60]
+            tid = str(e.get("template_id", "")).strip()
+            if not label or not tid:
+                continue
+            if not re.match(r"^[A-Za-z0-9_-]+$", tid):
+                continue
+            if tid in seen:
+                continue
+            seen.add(tid); cleaned.append({"label": label, "template_id": tid})
+        if cleaned:                              # never let the catalog go empty
+            new_catalog = cleaned
+            out["pod_image_catalog"] = cleaned
+    valid = {e["template_id"] for e in new_catalog}
+    if "default_pod_image" in data:
+        d = str(data.get("default_pod_image", "")).strip()
+        out["default_pod_image"] = d if d in valid else (
+            new_catalog[0]["template_id"] if new_catalog else "")
+    if isinstance(data.get("project_pod_image"), dict):
+        cleaned = {}
+        for proj, tid in data["project_pod_image"].items():
+            tid = str(tid).strip()
+            if proj in PROJECTS and tid in valid:
+                cleaned[proj] = tid
+        out["project_pod_image"] = cleaned
+    return out
 def is_admin(): return session.get("admin") is True
 
 # ============================================================
@@ -1268,7 +1329,7 @@ DEPLOY_MUTATION = """mutation DeployOnDemand($input: PodFindAndDeployOnDemandInp
   }
 }"""
 
-def create_pod_via_graphql(name):
+def create_pod_via_graphql(name, template_id=None):
     """Create a pod via the same GraphQL mutation that the RunPod UI uses.
     Returns {id, name, imageName} on success, raises RuntimeError on any failure.
     Caller (create_pod) is responsible for falling back to CLI if this fails."""
@@ -1290,7 +1351,7 @@ def create_pod_via_graphql(name):
             "ports": PRESET["ports"],
             "startJupyter": PRESET["start_jupyter"],
             "startSsh": PRESET["start_ssh"],
-            "templateId": PRESET["template_id"],
+            "templateId": template_id or PRESET["template_id"],
             "volumeInGb": PRESET["volume_in_gb"],
             "volumeKey": None,
         }
@@ -1360,7 +1421,7 @@ def create_pod_via_graphql(name):
 # ============================================================
 # Pod operations
 # ============================================================
-def create_pod(name, bypass_window=False):
+def create_pod(name, bypass_window=False, template_id=None):
     s = get_settings()
     # Check pod creation restriction window unless caller explicitly bypasses (admin).
     # Strategy A: restriction only blocks NEW pods, existing pods keep running regardless.
@@ -1389,7 +1450,7 @@ def create_pod(name, bypass_window=False):
     if _api_key:
         try:
             log.info(f"Creating pod {name!r} via GraphQL DeployOnDemand mutation")
-            return create_pod_via_graphql(name)
+            return create_pod_via_graphql(name, template_id=template_id)
         except GpuUnavailableError:
             # No GPU available right now. The CLI path also fails on scarcity,
             # so don't bother — surface the retryable error to the caller.
@@ -1406,7 +1467,8 @@ def create_pod(name, bypass_window=False):
              "--gpu-count",str(PRESET["gpu_count"]),"--name",name,"--image",PRESET["image"],
              "--container-disk-in-gb",str(PRESET["container_disk_in_gb"]),
              "--volume-mount-path",PRESET["volume_mount_path"],"--volume-in-gb",str(PRESET["volume_in_gb"])]
-        if PRESET.get("template_id"): cmd+=["--template-id",PRESET["template_id"]]
+        tid = template_id or PRESET.get("template_id")
+        if tid: cmd+=["--template-id",tid]
         if PRESET.get("network_volume_id"): cmd+=["--network-volume-id",PRESET["network_volume_id"]]
         if PRESET.get("env"): cmd+=["--env",json.dumps(PRESET["env"])]
     else:
@@ -1414,7 +1476,8 @@ def create_pod(name, bypass_window=False):
              "--gpuType",PRESET["gpu_id"],"--gpuCount",str(PRESET["gpu_count"]),"--name",name,
              "--imageName",PRESET["image"],"--containerDiskSize",str(PRESET["container_disk_in_gb"]),
              "--volumePath",PRESET["volume_mount_path"],"--volumeSize",str(PRESET["volume_in_gb"])]
-        if PRESET.get("template_id"): cmd+=["--templateId",PRESET["template_id"]]
+        tid = template_id or PRESET.get("template_id")
+        if tid: cmd+=["--templateId",tid]
         if PRESET.get("network_volume_id"): cmd+=["--networkVolumeId",PRESET["network_volume_id"]]
         if PRESET.get("env"):
             for k,v in PRESET["env"].items(): cmd+=["--env",f"{k}={v}"]
@@ -1554,7 +1617,8 @@ def process_pending_requests():
 
             # 2) Attempt the deploy (quota/window were reserved at creation).
             try:
-                result = create_pod_via_graphql(req["pod_name"])
+                tid = resolve_template_id(req["assigned_project"])
+                result = create_pod_via_graphql(req["pod_name"], template_id=tid)
             except GpuUnavailableError as e:
                 update_pod_request(rid, last_attempt_at=now_iso(), last_error=str(e))
                 continue
@@ -1794,7 +1858,8 @@ def api_pods_post():
         reserved = pods + [{"name": n} for n in pending_request_names()]
         name = next_name(reserved, ap)
         # Admins bypass window + per-project quota; regular users are checked inside create_pod
-        result = create_pod(name, bypass_window=admin)
+        result = create_pod(name, bypass_window=admin,
+                            template_id=resolve_template_id(ap))
         pid = result.get("id", "") if isinstance(result, dict) else ""
         # Write the assignment row BEFORE logging the create action. If the upsert
         # raises, the pod exists on RunPod but has no assignment — surface the
@@ -1956,9 +2021,13 @@ def api_admin_settings_get():
     for p in PROJECTS:
         if p not in offsets:
             offsets[p] = 0
+    catalog = s.get("pod_image_catalog") or list(DEFAULT_SETTINGS["pod_image_catalog"])
     return jsonify({"ok":True,"settings":{
         "project_quotas": quotas,
         "project_autodelete_offset_minutes": offsets,
+        "pod_image_catalog": catalog,
+        "default_pod_image": s.get("default_pod_image") or DEFAULT_SETTINGS["default_pod_image"],
+        "project_pod_image": s.get("project_pod_image") or {},
         **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until","pod_request_timeout_minutes","pod_request_retry_interval_seconds"]}
     }})
 
@@ -1988,6 +2057,8 @@ def api_admin_settings_post():
             except (TypeError, ValueError):
                 pass
         s["project_autodelete_offset_minutes"] = offsets
+    # Per-project pod image selection (catalog + default + project map).
+    s.update(compute_image_settings_update(data, s))
     if "new_password" in data and data["new_password"].strip(): s["admin_password"]=data["new_password"].strip()
     if "auto_delete_enabled" in data: s["auto_delete_enabled"]=bool(data["auto_delete_enabled"])
     if "auto_delete_time" in data:
@@ -2452,6 +2523,13 @@ async function loadAdminPanel(){
         '</div>'+
         '<div class="sb-dim">Лимит одновременно запущенных подов на каждый проект. Админ обходит лимит.</div>'+
       '</div>'+
+      '<div class="sb-section"><h3>🖼 Образы подов</h3>'+
+        '<div id="imgCatalog"></div>'+
+        '<button class="btn" type="button" onclick="imgAddRow()">+ Добавить образ</button>'+
+        '<div class="sb-dim">Каталог образов: понятное название + RunPod template_id. ⭐ — образ по умолчанию (его нельзя удалить).</div>'+
+        '<div style="margin-top:8px;font-size:12px;color:var(--t2)">Образ на проект:</div>'+
+        '<div class="quota-grid" id="imgProjGrid" style="margin-top:4px"></div>'+
+      '</div>'+
       '<div class="sb-section"><h3>⏱ Idle timeout</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sIdleOn" '+(s.idle_timeout_enabled?'checked':'')+
         '><span class="sw"></span> Auto-delete idle pods</label></div>'+
@@ -2502,6 +2580,7 @@ async function loadAdminPanel(){
     '</div>'+
   '</div>';
   // Initialize the schedule hint with current values (server UTC + computed local representation)
+  imgInit(s);
   updateSchedHint();
   updateWindowHint();
   updateOffsetHints();
@@ -2621,6 +2700,66 @@ function formatScheduleLog(raw){
   return localTs+' — '+m[2];
 }
 
+// ---- Pod image catalog editor ----
+let _imgCatalog = [];        // [{label, template_id}]
+let _imgDefault = '';        // template_id of the default entry
+let _imgProjSel = {};        // {project: template_id}
+let _imgProjects = [];       // project names, from project_quotas keys
+
+function imgInit(s){
+  _imgCatalog = (s.pod_image_catalog||[]).map(e=>({label:e.label,template_id:e.template_id}));
+  _imgDefault = s.default_pod_image||(_imgCatalog[0]&&_imgCatalog[0].template_id)||'';
+  _imgProjSel = Object.assign({}, s.project_pod_image||{});
+  _imgProjects = Object.keys(s.project_quotas||{});
+  imgRenderCatalog(); imgRenderGrid();
+}
+function imgReadCatalogFromDom(){
+  // Pull current input values back into _imgCatalog before re-render so edits survive.
+  const rows=document.querySelectorAll('#imgCatalog .imgRow');
+  _imgCatalog=Array.from(rows).map(r=>({
+    label:r.querySelector('.imgLabel').value,
+    template_id:r.querySelector('.imgTid').value.trim()
+  }));
+}
+function imgAddRow(){ imgReadCatalogFromDom(); _imgCatalog.push({label:'',template_id:''}); imgRenderCatalog(); imgRenderGrid(); }
+function imgDelRow(i){
+  imgReadCatalogFromDom();
+  const tid=_imgCatalog[i].template_id;
+  if(tid && tid===_imgDefault){ toast('Нельзя удалить образ по умолчанию','er'); return; }
+  _imgCatalog.splice(i,1); imgRenderCatalog(); imgRenderGrid();
+}
+function imgSetDefault(i){
+  imgReadCatalogFromDom();
+  const tid=(_imgCatalog[i].template_id||'').trim();
+  if(!tid){ toast('Введите template_id перед выбором по умолчанию','er'); return; }
+  _imgDefault=tid; imgRenderCatalog(); imgRenderGrid();
+}
+function imgRenderCatalog(){
+  $('imgCatalog').innerHTML=_imgCatalog.map((e,i)=>{
+    const isDef=e.template_id && e.template_id===_imgDefault;
+    return '<div class="fr imgRow" data-i="'+i+'">'+
+      '<input class="imgLabel" placeholder="название" value="'+imgEsc(e.label)+'" style="flex:1">'+
+      '<input class="imgTid" placeholder="template_id" value="'+imgEsc(e.template_id)+'" oninput="imgRenderGrid()" style="flex:1">'+
+      '<button class="btn" type="button" title="Сделать образом по умолчанию" onclick="imgSetDefault('+i+')">'+(isDef?'⭐':'☆')+'</button>'+
+      '<button class="btn" type="button" title="Удалить" onclick="imgDelRow('+i+')"'+(isDef?' disabled':'')+'>🗑</button>'+
+    '</div>';
+  }).join('');
+}
+function imgEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+function imgRenderGrid(){
+  imgReadCatalogFromDom();
+  // Preserve any in-progress per-project selections before we overwrite the grid.
+  document.querySelectorAll('.imgProj').forEach(el=>{ _imgProjSel[el.dataset.proj]=el.value; });
+  const defLabel=(_imgCatalog.find(e=>e.template_id===_imgDefault)||{}).label||'дефолт';
+  $('imgProjGrid').innerHTML=_imgProjects.map(p=>{
+    const sel=_imgProjSel[p]||'';
+    const opts=['<option value="">По умолчанию ('+imgEsc(defLabel)+')</option>']
+      .concat(_imgCatalog.filter(e=>e.template_id).map(e=>
+        '<option value="'+imgEsc(e.template_id)+'"'+(e.template_id===sel?' selected':'')+'>'+imgEsc(e.label||e.template_id)+'</option>'));
+    return '<div class="fr"><label>'+imgEsc(p)+'</label><select class="imgProj" data-proj="'+imgEsc(p)+'">'+opts.join('')+'</select></div>';
+  }).join('');
+}
+
 async function sbSave(){
   const quotas = {};
   document.querySelectorAll('.qInput').forEach(el => {
@@ -2630,6 +2769,12 @@ async function sbSave(){
   document.querySelectorAll('.offInput').forEach(el => {
     offsets[el.dataset.proj] = parseInt(el.value,10) || 0;
   });
+  imgReadCatalogFromDom();
+  const podImageCatalog = _imgCatalog
+    .map(e=>({label:(e.label||'').trim(), template_id:(e.template_id||'').trim()}))
+    .filter(e=>e.label && e.template_id);
+  const projImg = {};
+  document.querySelectorAll('.imgProj').forEach(el=>{ if(el.value) projImg[el.dataset.proj]=el.value; });
   try{await aok('/api/admin/settings','POST',{project_quotas:quotas,
     project_autodelete_offset_minutes:offsets,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
@@ -2639,6 +2784,9 @@ async function sbSave(){
     pod_window_enabled:$('sWinOn').checked,
     pod_window_from:localTimeToUtc($('sWinFrom').value),
     pod_window_until:localTimeToUtc($('sWinUntil').value),
+    pod_image_catalog:podImageCatalog,
+    default_pod_image:_imgDefault,
+    project_pod_image:projImg,
     new_password:$('sNewPw').value||undefined});toast('Saved','ok');await refreshPods()}catch(e){toast(e.message,'er')}
 }
 

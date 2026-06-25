@@ -28,6 +28,8 @@ routes, inline frontend и `main`.
 
 > Авторетрай заявок («заявка на под») — кросс-секционная фича: CRUD-хелперы в SQLite-слое, `GpuUnavailableError` в GraphQL deploy, `process_pending_requests()` в Pod operations, `pod_request_loop()` в Scheduler. Полное описание — `docs/graphql-deploy.md`.
 
+> Выбор образа пода — тоже кросс-секционная фича: три ключа настроек (`pod_image_catalog`, `default_pod_image`, `project_pod_image`) в Settings, хелпер `resolve_template_id(project)` в секции Settings резолвит нужный `template_id` и кладёт его в `create_pod()` / `create_pod_via_graphql()` (Pod operations / GraphQL deploy). Авторетрай (`process_pending_requests`) перерезолвит образ на каждой попытке. Полное описание — `docs/graphql-deploy.md`, `docs/admin-panel.md`.
+
 ## Глобальные константы
 
 ### `PRESET` (runpod_manager.py:48–67)
@@ -86,6 +88,9 @@ PROJECTS = ["CV", "DV", "MT", "PT", "MARK", "ADMIN", "TV", "MW"]
 | `pod_request_retry_interval_seconds` | `15` | Авторетрай: пауза между попытками деплоя (сек), 5..600 |
 | `pod_window_enabled` | `False` | Окно запрета создания подов |
 | `pod_window_from` / `pod_window_until` | `"22:00"` / `"08:00"` | UTC `HH:MM`, период запрета (overnight поддерживается) |
+| `pod_image_catalog` | `[{label:"Текущий (comfy_runpod)",template_id:"i3j2sm66q8"}]` | Каталог образов подов (label + RunPod template_id), редактируется в админке |
+| `default_pod_image` | `"i3j2sm66q8"` | template_id образа по умолчанию (проекты без выбора, unassigned, admin-поды) |
+| `project_pod_image` | `{}` | Per-project выбор образа `{project: template_id}`; нет ключа = дефолт |
 
 ## Кэши и их TTL
 
