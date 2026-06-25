@@ -2523,6 +2523,13 @@ async function loadAdminPanel(){
         '</div>'+
         '<div class="sb-dim">Лимит одновременно запущенных подов на каждый проект. Админ обходит лимит.</div>'+
       '</div>'+
+      '<div class="sb-section"><h3>🖼 Образы подов</h3>'+
+        '<div id="imgCatalog"></div>'+
+        '<button class="btn" type="button" onclick="imgAddRow()">+ Добавить образ</button>'+
+        '<div class="sb-dim">Каталог образов: понятное название + RunPod template_id. ⭐ — образ по умолчанию (его нельзя удалить).</div>'+
+        '<div style="margin-top:8px;font-size:12px;color:var(--t2)">Образ на проект:</div>'+
+        '<div class="quota-grid" id="imgProjGrid" style="margin-top:4px"></div>'+
+      '</div>'+
       '<div class="sb-section"><h3>⏱ Idle timeout</h3>'+
         '<div class="fr"><label class="toggle"><input type="checkbox" id="sIdleOn" '+(s.idle_timeout_enabled?'checked':'')+
         '><span class="sw"></span> Auto-delete idle pods</label></div>'+
@@ -2573,6 +2580,7 @@ async function loadAdminPanel(){
     '</div>'+
   '</div>';
   // Initialize the schedule hint with current values (server UTC + computed local representation)
+  imgInit(s);
   updateSchedHint();
   updateWindowHint();
   updateOffsetHints();
@@ -2692,6 +2700,58 @@ function formatScheduleLog(raw){
   return localTs+' — '+m[2];
 }
 
+// ---- Pod image catalog editor ----
+let _imgCatalog = [];        // [{label, template_id}]
+let _imgDefault = '';        // template_id of the default entry
+let _imgProjSel = {};        // {project: template_id}
+let _imgProjects = [];       // project names, from project_quotas keys
+
+function imgInit(s){
+  _imgCatalog = (s.pod_image_catalog||[]).map(e=>({label:e.label,template_id:e.template_id}));
+  _imgDefault = s.default_pod_image||(_imgCatalog[0]&&_imgCatalog[0].template_id)||'';
+  _imgProjSel = Object.assign({}, s.project_pod_image||{});
+  _imgProjects = Object.keys(s.project_quotas||{});
+  imgRenderCatalog(); imgRenderGrid();
+}
+function imgReadCatalogFromDom(){
+  // Pull current input values back into _imgCatalog before re-render so edits survive.
+  const rows=document.querySelectorAll('#imgCatalog .imgRow');
+  _imgCatalog=Array.from(rows).map(r=>({
+    label:r.querySelector('.imgLabel').value,
+    template_id:r.querySelector('.imgTid').value.trim()
+  }));
+}
+function imgAddRow(){ imgReadCatalogFromDom(); _imgCatalog.push({label:'',template_id:''}); imgRenderCatalog(); imgRenderGrid(); }
+function imgDelRow(i){
+  imgReadCatalogFromDom();
+  const tid=_imgCatalog[i].template_id;
+  if(tid && tid===_imgDefault){ toast('Нельзя удалить образ по умолчанию','er'); return; }
+  _imgCatalog.splice(i,1); imgRenderCatalog(); imgRenderGrid();
+}
+function imgSetDefault(i){ imgReadCatalogFromDom(); _imgDefault=_imgCatalog[i].template_id; imgRenderCatalog(); imgRenderGrid(); }
+function imgRenderCatalog(){
+  $('imgCatalog').innerHTML=_imgCatalog.map((e,i)=>{
+    const isDef=e.template_id && e.template_id===_imgDefault;
+    return '<div class="fr imgRow" data-i="'+i+'">'+
+      '<input class="imgLabel" placeholder="название" value="'+(e.label||'').replace(/"/g,'&quot;')+'" style="flex:1">'+
+      '<input class="imgTid" placeholder="template_id" value="'+(e.template_id||'').replace(/"/g,'&quot;')+'" oninput="imgRenderGrid()" style="flex:1">'+
+      '<button class="btn" type="button" title="Сделать образом по умолчанию" onclick="imgSetDefault('+i+')">'+(isDef?'⭐':'☆')+'</button>'+
+      '<button class="btn" type="button" title="Удалить" onclick="imgDelRow('+i+')"'+(isDef?' disabled':'')+'>🗑</button>'+
+    '</div>';
+  }).join('');
+}
+function imgRenderGrid(){
+  imgReadCatalogFromDom();
+  const defLabel=(_imgCatalog.find(e=>e.template_id===_imgDefault)||{}).label||'дефолт';
+  $('imgProjGrid').innerHTML=_imgProjects.map(p=>{
+    const sel=_imgProjSel[p]||'';
+    const opts=['<option value="">По умолчанию ('+defLabel+')</option>']
+      .concat(_imgCatalog.filter(e=>e.template_id).map(e=>
+        '<option value="'+e.template_id+'"'+(e.template_id===sel?' selected':'')+'>'+(e.label||e.template_id)+'</option>'));
+    return '<div class="fr"><label>'+p+'</label><select class="imgProj" data-proj="'+p+'">'+opts.join('')+'</select></div>';
+  }).join('');
+}
+
 async function sbSave(){
   const quotas = {};
   document.querySelectorAll('.qInput').forEach(el => {
@@ -2701,6 +2761,12 @@ async function sbSave(){
   document.querySelectorAll('.offInput').forEach(el => {
     offsets[el.dataset.proj] = parseInt(el.value,10) || 0;
   });
+  imgReadCatalogFromDom();
+  const podImageCatalog = _imgCatalog
+    .map(e=>({label:(e.label||'').trim(), template_id:(e.template_id||'').trim()}))
+    .filter(e=>e.label && e.template_id);
+  const projImg = {};
+  document.querySelectorAll('.imgProj').forEach(el=>{ if(el.value) projImg[el.dataset.proj]=el.value; });
   try{await aok('/api/admin/settings','POST',{project_quotas:quotas,
     project_autodelete_offset_minutes:offsets,
     auto_delete_enabled:$('sSchedOn').checked,auto_delete_time:localTimeToUtc($('sSchedTime').value),
@@ -2710,6 +2776,9 @@ async function sbSave(){
     pod_window_enabled:$('sWinOn').checked,
     pod_window_from:localTimeToUtc($('sWinFrom').value),
     pod_window_until:localTimeToUtc($('sWinUntil').value),
+    pod_image_catalog:podImageCatalog,
+    default_pod_image:_imgDefault,
+    project_pod_image:projImg,
     new_password:$('sNewPw').value||undefined});toast('Saved','ok');await refreshPods()}catch(e){toast(e.message,'er')}
 }
 
