@@ -764,6 +764,44 @@ def resolve_template_id(project):
     if s.get("default_pod_image") in valid:
         return s["default_pod_image"]
     return PRESET["template_id"]
+def compute_image_settings_update(data, s):
+    """Pure validation for the pod-image settings POST. Given the request body
+    `data` and current settings `s`, return a dict containing only the validated
+    keys among {pod_image_catalog, default_pod_image, project_pod_image} that were
+    present in `data`. Catalog never becomes empty (invalid/empty submission is
+    dropped). Stale leftovers are tolerated by resolve_template_id at deploy time."""
+    out = {}
+    new_catalog = s.get("pod_image_catalog") or []
+    if isinstance(data.get("pod_image_catalog"), list):
+        seen = set(); cleaned = []
+        for e in data["pod_image_catalog"]:
+            if not isinstance(e, dict):
+                continue
+            label = str(e.get("label", "")).strip()[:60]
+            tid = str(e.get("template_id", "")).strip()
+            if not label or not tid:
+                continue
+            if not re.match(r"^[A-Za-z0-9_-]+$", tid):
+                continue
+            if tid in seen:
+                continue
+            seen.add(tid); cleaned.append({"label": label, "template_id": tid})
+        if cleaned:                              # never let the catalog go empty
+            new_catalog = cleaned
+            out["pod_image_catalog"] = cleaned
+    valid = {e["template_id"] for e in new_catalog}
+    if "default_pod_image" in data:
+        d = str(data.get("default_pod_image", "")).strip()
+        out["default_pod_image"] = d if d in valid else (
+            new_catalog[0]["template_id"] if new_catalog else "")
+    if isinstance(data.get("project_pod_image"), dict):
+        cleaned = {}
+        for proj, tid in data["project_pod_image"].items():
+            tid = str(tid).strip()
+            if proj in PROJECTS and tid in valid:
+                cleaned[proj] = tid
+        out["project_pod_image"] = cleaned
+    return out
 def is_admin(): return session.get("admin") is True
 
 # ============================================================
@@ -1983,9 +2021,13 @@ def api_admin_settings_get():
     for p in PROJECTS:
         if p not in offsets:
             offsets[p] = 0
+    catalog = s.get("pod_image_catalog") or list(DEFAULT_SETTINGS["pod_image_catalog"])
     return jsonify({"ok":True,"settings":{
         "project_quotas": quotas,
         "project_autodelete_offset_minutes": offsets,
+        "pod_image_catalog": catalog,
+        "default_pod_image": s.get("default_pod_image") or DEFAULT_SETTINGS["default_pod_image"],
+        "project_pod_image": s.get("project_pod_image") or {},
         **{k:s.get(k) for k in ["auto_delete_enabled","auto_delete_time","auto_delete_last_log","idle_timeout_enabled","idle_timeout_minutes","pod_window_enabled","pod_window_from","pod_window_until","pod_request_timeout_minutes","pod_request_retry_interval_seconds"]}
     }})
 
@@ -2015,6 +2057,8 @@ def api_admin_settings_post():
             except (TypeError, ValueError):
                 pass
         s["project_autodelete_offset_minutes"] = offsets
+    # Per-project pod image selection (catalog + default + project map).
+    s.update(compute_image_settings_update(data, s))
     if "new_password" in data and data["new_password"].strip(): s["admin_password"]=data["new_password"].strip()
     if "auto_delete_enabled" in data: s["auto_delete_enabled"]=bool(data["auto_delete_enabled"])
     if "auto_delete_time" in data:

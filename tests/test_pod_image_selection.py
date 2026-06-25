@@ -126,3 +126,50 @@ class AutoRetryTemplateTest(unittest.TestCase):
             rm.process_pending_requests()
 
         self.assertEqual(captured["tid"], "cvtpl00001")
+
+
+class ImageSettingsValidationTest(unittest.TestCase):
+    def _cur(self):
+        return {
+            "pod_image_catalog": [{"label": "Default", "template_id": "def0000001"}],
+            "default_pod_image": "def0000001",
+            "project_pod_image": {},
+        }
+
+    def test_dedupes_template_ids(self):
+        data = {"pod_image_catalog": [
+            {"label": "A", "template_id": "dup1"},
+            {"label": "B", "template_id": "dup1"},
+        ]}
+        out = rm.compute_image_settings_update(data, self._cur())
+        self.assertEqual(out["pod_image_catalog"], [{"label": "A", "template_id": "dup1"}])
+
+    def test_rejects_bad_template_id_and_empty_label(self):
+        data = {"pod_image_catalog": [
+            {"label": "ok", "template_id": "good1"},
+            {"label": "", "template_id": "noLabel"},
+            {"label": "bad chars", "template_id": "has space"},
+        ]}
+        out = rm.compute_image_settings_update(data, self._cur())
+        self.assertEqual(out["pod_image_catalog"], [{"label": "ok", "template_id": "good1"}])
+
+    def test_empty_catalog_not_applied(self):
+        data = {"pod_image_catalog": []}
+        out = rm.compute_image_settings_update(data, self._cur())
+        self.assertNotIn("pod_image_catalog", out)
+
+    def test_default_outside_catalog_falls_to_first(self):
+        data = {"pod_image_catalog": [
+                    {"label": "A", "template_id": "aaa"},
+                    {"label": "B", "template_id": "bbb"}],
+                "default_pod_image": "zzz"}
+        out = rm.compute_image_settings_update(data, self._cur())
+        self.assertEqual(out["default_pod_image"], "aaa")
+
+    def test_project_map_filters_unknown_project_and_template(self):
+        data = {"pod_image_catalog": [{"label": "A", "template_id": "aaa"}],
+                "default_pod_image": "aaa",
+                "project_pod_image": {"CV": "aaa", "CV": "aaa",
+                                      "NOPE": "aaa", "DV": "missing"}}
+        out = rm.compute_image_settings_update(data, self._cur())
+        self.assertEqual(out["project_pod_image"], {"CV": "aaa"})
