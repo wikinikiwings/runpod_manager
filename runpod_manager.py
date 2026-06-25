@@ -79,6 +79,14 @@ SETTINGS_FILE = DATA_DIR / "admin_settings.json"
 DB_PATH = DATA_DIR / "runpod_manager.db"
 DEFAULT_SETTINGS = {"admin_password":"admin","max_pods":5,
     "project_quotas":{p: DEFAULT_PROJECT_QUOTA for p in PROJECTS},
+    # Per-project pod image selection. Catalog of {label, template_id} the admin
+    # edits in the panel; default_pod_image is the template_id used for projects
+    # with no explicit choice, unassigned pods, and admin pods. project_pod_image
+    # maps project -> template_id (missing key = use default). Seeded with the
+    # current template so behavior is unchanged until the admin switches a project.
+    "pod_image_catalog":[{"label":"Текущий (comfy_runpod)","template_id":"i3j2sm66q8"}],
+    "default_pod_image":"i3j2sm66q8",
+    "project_pod_image":{},
     "auto_delete_enabled":False,"auto_delete_time":"21:00",
     "auto_delete_last_run":"","auto_delete_last_log":"",
     # Per-project auto-delete offset in MINUTES. For each project, the effective
@@ -741,6 +749,20 @@ def save_settings(s):
 def _save_nl(s):
     SETTINGS_FILE.write_text(json.dumps(s,indent=2,ensure_ascii=False),encoding="utf-8")
 def get_settings(): return load_settings()
+def resolve_template_id(project):
+    """RunPod template_id to deploy for a pod belonging to `project` (may be None
+    for unassigned/admin pods). Priority: the project's catalog choice if it still
+    exists, then the global default, then PRESET as a last resort if the catalog
+    is empty/broken."""
+    s = get_settings()
+    catalog = s.get("pod_image_catalog") or []
+    valid = {e.get("template_id") for e in catalog if isinstance(e, dict)}
+    tid = (s.get("project_pod_image") or {}).get(project)
+    if tid in valid:
+        return tid
+    if s.get("default_pod_image") in valid:
+        return s["default_pod_image"]
+    return PRESET["template_id"]
 def is_admin(): return session.get("admin") is True
 
 # ============================================================
