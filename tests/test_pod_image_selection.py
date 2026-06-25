@@ -169,7 +169,7 @@ class ImageSettingsValidationTest(unittest.TestCase):
     def test_project_map_filters_unknown_project_and_template(self):
         data = {"pod_image_catalog": [{"label": "A", "template_id": "aaa"}],
                 "default_pod_image": "aaa",
-                "project_pod_image": {"CV": "aaa", "CV": "aaa",
+                "project_pod_image": {"CV": "aaa",
                                       "NOPE": "aaa", "DV": "missing"}}
         out = rm.compute_image_settings_update(data, self._cur())
         self.assertEqual(out["project_pod_image"], {"CV": "aaa"})

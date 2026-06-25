@@ -2738,8 +2738,8 @@ function imgRenderCatalog(){
   $('imgCatalog').innerHTML=_imgCatalog.map((e,i)=>{
     const isDef=e.template_id && e.template_id===_imgDefault;
     return '<div class="fr imgRow" data-i="'+i+'">'+
-      '<input class="imgLabel" placeholder="название" value="'+(e.label||'').replace(/"/g,'&quot;')+'" style="flex:1">'+
-      '<input class="imgTid" placeholder="template_id" value="'+(e.template_id||'').replace(/"/g,'&quot;')+'" oninput="imgRenderGrid()" style="flex:1">'+
+      '<input class="imgLabel" placeholder="название" value="'+imgEsc(e.label)+'" style="flex:1">'+
+      '<input class="imgTid" placeholder="template_id" value="'+imgEsc(e.template_id)+'" oninput="imgRenderGrid()" style="flex:1">'+
       '<button class="btn" type="button" title="Сделать образом по умолчанию" onclick="imgSetDefault('+i+')">'+(isDef?'⭐':'☆')+'</button>'+
       '<button class="btn" type="button" title="Удалить" onclick="imgDelRow('+i+')"'+(isDef?' disabled':'')+'>🗑</button>'+
     '</div>';
