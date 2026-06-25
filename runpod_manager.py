@@ -2728,7 +2728,12 @@ function imgDelRow(i){
   if(tid && tid===_imgDefault){ toast('Нельзя удалить образ по умолчанию','er'); return; }
   _imgCatalog.splice(i,1); imgRenderCatalog(); imgRenderGrid();
 }
-function imgSetDefault(i){ imgReadCatalogFromDom(); _imgDefault=_imgCatalog[i].template_id; imgRenderCatalog(); imgRenderGrid(); }
+function imgSetDefault(i){
+  imgReadCatalogFromDom();
+  const tid=(_imgCatalog[i].template_id||'').trim();
+  if(!tid){ toast('Введите template_id перед выбором по умолчанию','er'); return; }
+  _imgDefault=tid; imgRenderCatalog(); imgRenderGrid();
+}
 function imgRenderCatalog(){
   $('imgCatalog').innerHTML=_imgCatalog.map((e,i)=>{
     const isDef=e.template_id && e.template_id===_imgDefault;
@@ -2740,15 +2745,18 @@ function imgRenderCatalog(){
     '</div>';
   }).join('');
 }
+function imgEsc(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function imgRenderGrid(){
   imgReadCatalogFromDom();
+  // Preserve any in-progress per-project selections before we overwrite the grid.
+  document.querySelectorAll('.imgProj').forEach(el=>{ _imgProjSel[el.dataset.proj]=el.value; });
   const defLabel=(_imgCatalog.find(e=>e.template_id===_imgDefault)||{}).label||'дефолт';
   $('imgProjGrid').innerHTML=_imgProjects.map(p=>{
     const sel=_imgProjSel[p]||'';
-    const opts=['<option value="">По умолчанию ('+defLabel+')</option>']
+    const opts=['<option value="">По умолчанию ('+imgEsc(defLabel)+')</option>']
       .concat(_imgCatalog.filter(e=>e.template_id).map(e=>
-        '<option value="'+e.template_id+'"'+(e.template_id===sel?' selected':'')+'>'+(e.label||e.template_id)+'</option>'));
-    return '<div class="fr"><label>'+p+'</label><select class="imgProj" data-proj="'+p+'">'+opts.join('')+'</select></div>';
+        '<option value="'+imgEsc(e.template_id)+'"'+(e.template_id===sel?' selected':'')+'>'+imgEsc(e.label||e.template_id)+'</option>'));
+    return '<div class="fr"><label>'+imgEsc(p)+'</label><select class="imgProj" data-proj="'+imgEsc(p)+'">'+opts.join('')+'</select></div>';
   }).join('');
 }
 
