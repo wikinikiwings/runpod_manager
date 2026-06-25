@@ -43,6 +43,7 @@ runpod_manager/
 | [architecture.md](architecture.md) | Разбивка `runpod_manager.py` по секциям, глобальные константы, `PRESET` |
 | [graphql-deploy.md](graphql-deploy.md) | **Самый важный.** Полная схема `DeployOnDemand`-мутации, переменные, headers, fallback на `runpodctl` |
 | [pod-lifecycle.md](pod-lifecycle.md) | Create → boot (порт 8189) → ready (порт 8188) → idle → delete, все health-check endpoints |
+| [pod-images.md](pod-images.md) | Два варианта образа для подов (**baked** ~73с vs **s3-loading** ~13мин), их компромиссы, контракт портов с менеджером, расхождения имён образов и незакрытый TODO #1 в baked |
 | [admin-panel.md](admin-panel.md) | Аутентификация (user + admin), все `/api/admin/*`, настройки, per-project quotas, pod window, scheduler |
 | [database.md](database.md) | DDL всех 5 таблиц SQLite, где каждая пишется/читается |
 | [deployment.md](deployment.md) | Запуск через `docker compose`, env vars, volumes, откуда читается API key |
@@ -70,6 +71,10 @@ cleartext; меняется через UI в admin-панели).
   Образ содержит `start.sh`, который запускает ComfyUI на 8188 и HTTP-сервер
   статуса на 8189 (этот сервер источник `/status.json` и `/runtime.json`,
   от которых зависит половина функционала менеджера).
+  > ⚠️ Имя `wikiniki/comfy_runpod:latest` **не совпадает** с реально собираемыми
+  > образами (`comfy_gpu_baked` / `comfy_gpu`) — фактический образ задаётся
+  > шаблоном `i3j2sm66q8` на стороне RunPod. Подробнее и про выбор baked vs
+  > s3-loading — [pod-images.md](pod-images.md).
 - **`runpodctl` CLI** — скачивается в Dockerfile при билде, используется только
   для `pod delete` / `pod start` и как fallback для `pod create`.
 
