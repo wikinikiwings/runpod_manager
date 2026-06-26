@@ -764,6 +764,15 @@ def resolve_template_id(project):
     if s.get("default_pod_image") in valid:
         return s["default_pod_image"]
     return PRESET["template_id"]
+def image_label_for_template(tid, catalog=None):
+    """Friendly label for a template_id from the catalog; falls back to the id
+    itself when the template has no catalog entry."""
+    if catalog is None:
+        catalog = get_settings().get("pod_image_catalog") or []
+    for e in catalog:
+        if isinstance(e, dict) and e.get("template_id") == tid:
+            return e.get("label") or tid
+    return tid
 def compute_image_settings_update(data, s):
     """Pure validation for the pod-image settings POST. Given the request body
     `data` and current settings `s`, return a dict containing only the validated
@@ -1801,6 +1810,15 @@ def api_pods_get():
                                         and p.get("assignedProject") == proj
                                         and p.get("countsTowardQuota"))
 
+        # For the admin "+ New Pod" dialog: which image label each project (and
+        # the unassigned/default case) will deploy, mirroring resolve_template_id.
+        image_by_project = {}
+        if viewer_is_admin:
+            catalog = s.get("pod_image_catalog") or []
+            for proj in PROJECTS:
+                image_by_project[proj] = image_label_for_template(resolve_template_id(proj), catalog)
+            image_by_project["__default__"] = image_label_for_template(resolve_template_id(None), catalog)
+
         sched = {"time": s["auto_delete_time"],
                  "lastLog": s.get("auto_delete_last_log", "")} if s.get("auto_delete_enabled") else None
         window = check_pod_window()
@@ -1822,6 +1840,7 @@ def api_pods_get():
                         "overQuota": over_quota,
                         "projectQuotas": quotas,
                         "projectCounts": project_counts,
+                        "imageByProject": image_by_project,
                         "schedule": sched,
                         "idleTimeoutEnabled": s.get("idle_timeout_enabled", True),
                         "idleTimeoutMinutes": s.get("idle_timeout_minutes", 120),
@@ -2324,10 +2343,11 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
     <button class="btn" onclick="refreshPods()" id="rb">↻ Refresh</button>
     <button class="btn bp" onclick="createPod()" id="cb">+ New Pod</button>
     <span id="adminCreateControls" style="display:none;align-items:center;gap:6px">
-      <select id="adminAssignProject" style="margin-left:8px;font-size:12px;padding:2px 4px">
-        <option value="">Мой проект (ADMIN)</option>
+      <select id="adminAssignProject" onchange="updateAdminImgHint()" style="margin-left:8px;font-size:12px;padding:2px 4px">
+        <option value="ADMIN">ADMIN (мой проект)</option>
         <option value="__null__">Не назначать</option>
       </select>
+      <span id="adminImgHint" style="margin-left:6px;font-size:11px;color:var(--t3)"></span>
       <label style="margin-left:4px;font-size:12px;white-space:nowrap"><input type="checkbox" id="adminCountsFlag"> считать в квоту</label>
     </span>
   </div>
@@ -2347,6 +2367,7 @@ label{font-family:var(--mono);font-size:11px;color:var(--t3);display:block;margi
 
 <script>
 let pods=[],requests=[],busy=new Set(),maxPods=99,isAdmin=false,user=null;
+let imgByProject={};  // {project: imageLabel, __default__: imageLabel} from /api/pods (admin only)
 let podWindowState=null;  // {enabled, is_open, from, until, opens_in_sec, closes_in_sec} from /api/pods
 // Activity log auto-refresh state. The interval is started when sidebar opens AND admin
 // is logged in, and cleared when either condition becomes false. lastActivityIds tracks
@@ -2754,7 +2775,7 @@ function imgRenderGrid(){
   $('imgProjGrid').innerHTML=_imgProjects.map(p=>{
     const sel=_imgProjSel[p]||'';
     const opts=['<option value="">По умолчанию ('+imgEsc(defLabel)+')</option>']
-      .concat(_imgCatalog.filter(e=>e.template_id).map(e=>
+      .concat(_imgCatalog.filter(e=>e.template_id&&(e.label||'').trim()).map(e=>
         '<option value="'+imgEsc(e.template_id)+'"'+(e.template_id===sel?' selected':'')+'>'+imgEsc(e.label||e.template_id)+'</option>'));
     return '<div class="fr"><label>'+imgEsc(p)+'</label><select class="imgProj" data-proj="'+imgEsc(p)+'">'+opts.join('')+'</select></div>';
   }).join('');
@@ -2836,7 +2857,7 @@ async function refreshPods(){
     // mid-session, for example). In that case the login screen is already shown
     // and we just silently stop — nothing more to do here.
     if(!r)return;
-    pods=r.pods||[];requests=r.requests||[];maxPods=r.maxPods||99;
+    pods=r.pods||[];requests=r.requests||[];maxPods=r.maxPods||99;imgByProject=r.imageByProject||{};
     // Server is the authoritative source for admin status. Reading it from
     // /api/pods response means the eye icons render correctly even immediately
     // after page load, before the user ever opens the admin sidebar. If the
@@ -2906,6 +2927,15 @@ async function refreshPods(){
     }else{wb.style.display='none'}
   }catch(e){toast('Failed: '+e.message,'er')}finally{b.disabled=false;b.innerHTML='↻ Refresh'}}
 
+// Show which image the selected project will deploy (mirrors server resolve_template_id).
+function updateAdminImgHint(){
+  const sel=$('adminAssignProject'),hint=$('adminImgHint');
+  if(!sel||!hint)return;
+  const v=sel.value;
+  // '__null__' (unassigned) uses the global default image; a project uses its own.
+  const label=(v==='__null__'||v==='')?imgByProject['__default__']:(imgByProject[v]||imgByProject['__default__']);
+  hint.textContent=label?('образ: '+label):'';
+}
 async function createPod(){if(!user)return;const b=$('cb');b.disabled=true;b.innerHTML='<span class="sp"></span>';
   // Identity is bound to the session on the server side. Admin may override via body.
   let body={};
@@ -3168,9 +3198,11 @@ function render(){
   if(acc){
     acc.style.display=isAdmin?'inline-flex':'none';
     const apEl=$('adminAssignProject');
+    // ADMIN is already the first static option ("ADMIN (мой проект)"); add the rest.
     if(isAdmin&&apEl&&apEl.options.length<=2){
-      PROJECTS.forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;apEl.appendChild(o);});
+      PROJECTS.filter(p=>p!=='ADMIN').forEach(p=>{const o=document.createElement('option');o.value=p;o.textContent=p;apEl.appendChild(o);});
     }
+    if(isAdmin)updateAdminImgHint();
   }
   const reqCards=(requests||[]).map(r=>{
     const nm=esc(r.name);

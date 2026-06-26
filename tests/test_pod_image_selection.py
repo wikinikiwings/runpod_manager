@@ -173,3 +173,79 @@ class ImageSettingsValidationTest(unittest.TestCase):
                                       "NOPE": "aaa", "DV": "missing"}}
         out = rm.compute_image_settings_update(data, self._cur())
         self.assertEqual(out["project_pod_image"], {"CV": "aaa"})
+
+
+class ImageLabelTest(unittest.TestCase):
+    def test_label_for_known_template(self):
+        cat = [{"label": "Baked", "template_id": "bk1"}]
+        self.assertEqual(rm.image_label_for_template("bk1", cat), "Baked")
+
+    def test_label_falls_back_to_id_when_unknown(self):
+        self.assertEqual(rm.image_label_for_template("missing", []), "missing")
+
+    def test_label_falls_back_to_id_when_label_empty(self):
+        cat = [{"label": "", "template_id": "bk1"}]
+        self.assertEqual(rm.image_label_for_template("bk1", cat), "bk1")
+
+
+class CreatePathImageTest(unittest.TestCase):
+    """Exercises the real HTTP path: which template_id reaches the deploy call
+    for users and admins. Locks the root cause found in debugging — the image
+    follows the pod's project, and an admin must pick the project."""
+    def setUp(self):
+        self.db = tempfile.NamedTemporaryFile(suffix=".db", delete=False); self.db.close()
+        self.st = tempfile.NamedTemporaryFile(suffix=".json", delete=False); self.st.close()
+        self._odb, self._ost, self._okey = rm.DB_PATH, rm.SETTINGS_FILE, rm._api_key
+        rm.DB_PATH = Path(self.db.name); rm.SETTINGS_FILE = Path(self.st.name)
+        rm.init_db(); rm.save_settings(dict(rm.DEFAULT_SETTINGS))
+        rm._api_key = "FAKEKEY"          # force the GraphQL primary path
+        rm.app.config["TESTING"] = True
+        # admin saves a catalog with CV -> newbaked99
+        adm = rm.app.test_client()
+        adm.post("/api/admin/login", json={"password": "admin"})
+        adm.post("/api/admin/settings", json={
+            "pod_image_catalog": [{"label": "T", "template_id": "i3j2sm66q8"},
+                                  {"label": "Baked", "template_id": "newbaked99"}],
+            "default_pod_image": "i3j2sm66q8",
+            "project_pod_image": {"CV": "newbaked99"}})
+
+    def tearDown(self):
+        rm.DB_PATH, rm.SETTINGS_FILE, rm._api_key = self._odb, self._ost, self._okey
+        for f in (self.db.name, self.st.name):
+            try: os.unlink(f)
+            except OSError: pass
+
+    def _deploy_tid(self, client, body):
+        seen = {}
+        def fake(name, template_id=None): seen["tid"] = template_id; return {"id": "pX", "name": name}
+        with mock.patch.object(rm, "list_pods", return_value=[]), \
+             mock.patch.object(rm, "create_pod_via_graphql", side_effect=fake), \
+             mock.patch.object(rm, "upsert_pod_assignment"), \
+             mock.patch.object(rm, "project_quota_usage", return_value=0), \
+             mock.patch.object(rm, "log_action"):
+            r = client.post("/api/pods", json=body)
+        self.assertTrue(r.get_json().get("ok"), r.get_json())
+        return seen.get("tid")
+
+    def test_user_of_project_gets_its_image(self):
+        c = rm.app.test_client()
+        c.post("/api/user/register", json={"nickname": "u", "project": "CV"})
+        self.assertEqual(self._deploy_tid(c, {}), "newbaked99")
+
+    def test_user_of_unassigned_project_gets_default(self):
+        c = rm.app.test_client()
+        c.post("/api/user/register", json={"nickname": "u", "project": "DV"})
+        self.assertEqual(self._deploy_tid(c, {}), "i3j2sm66q8")
+
+    def test_admin_with_selected_project_gets_its_image(self):
+        c = rm.app.test_client()
+        c.post("/api/admin/login", json={"password": "admin"})
+        c.post("/api/user/register", json={"nickname": "adm", "project": "ADMIN"})
+        self.assertEqual(self._deploy_tid(c, {"assigned_project": "CV"}), "newbaked99")
+
+    def test_admin_without_project_gets_default(self):
+        c = rm.app.test_client()
+        c.post("/api/admin/login", json={"password": "admin"})
+        c.post("/api/user/register", json={"nickname": "adm", "project": "ADMIN"})
+        # No assigned_project in body -> ap=None -> default image (the original bug).
+        self.assertEqual(self._deploy_tid(c, {}), "i3j2sm66q8")
