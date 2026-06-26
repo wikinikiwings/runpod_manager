@@ -49,6 +49,8 @@ runpod_manager/
 | [deployment.md](deployment.md) | Запуск через `docker compose`, env vars, volumes, откуда читается API key |
 | [recovery.md](recovery.md) | Плейбук на случай поломки: потерял БД / ключ / настройки / не стартует / списывает деньги |
 | [ui-conventions.md](ui-conventions.md) | Соглашения по inline-фронтенду (`FRONTEND_HTML`): темизация полей ввода (всегда указывать `type`), структура `.fr`/`label`/`.toggle`, экранирование ввода |
+| [pull-progress-proposal.md](pull-progress-proposal.md) | Идеи показать прогресс фазы PULL (слепая зона до 8189): фаза PULLING, оценочный бар, размер образа |
+| [pull-progress-log-tap-investigation.md](pull-progress-log-tap-investigation.md) | **Отложенная задача:** план реверса лог-эндпоинта консоли RunPod через F12 — критерии реализуемости, протокол захвата, дерево решений |
 
 ## Быстрый старт (если уже есть `.env` с ключом)
 
